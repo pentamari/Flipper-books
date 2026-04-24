@@ -270,19 +270,33 @@ void library_view_add_entry(
     if(!stored && cover_data) free(cover_data);
 }
 
-static int cmp_name(const void* a, const void* b) {
-    return strcmp(((LibraryEntry*)a)->title, ((LibraryEntry*)b)->title);
+/* Hand-rolled insertion sort. The Flipper firmware does not expose qsort
+ * through its public API (it's compiled in but symbols are stripped from
+ * the FAP linker table), so we keep our own. N is at most LIBRARY_VIEW_MAX
+ * (24), so O(n^2) is fine and avoids the recursion of quicksort. */
+typedef int (*LibCmp)(const LibraryEntry*, const LibraryEntry*);
+
+static int cmp_name(const LibraryEntry* a, const LibraryEntry* b) {
+    return strcmp(a->title, b->title);
 }
-static int cmp_recent(const void* a, const void* b) {
-    uint32_t la = ((LibraryEntry*)a)->last_read;
-    uint32_t lb = ((LibraryEntry*)b)->last_read;
-    if(la == lb) return 0;
-    return lb > la ? 1 : -1;
+static int cmp_recent(const LibraryEntry* a, const LibraryEntry* b) {
+    if(a->last_read == b->last_read) return 0;
+    return b->last_read > a->last_read ? 1 : -1;
 }
-static int cmp_progress(const void* a, const void* b) {
-    int pa = ((LibraryEntry*)a)->progress_pct;
-    int pb = ((LibraryEntry*)b)->progress_pct;
-    return pb - pa;
+static int cmp_progress(const LibraryEntry* a, const LibraryEntry* b) {
+    return (int)b->progress_pct - (int)a->progress_pct;
+}
+
+static void library_sort_with(LibraryEntry* arr, uint16_t n, LibCmp cmp) {
+    for(uint16_t i = 1; i < n; ++i) {
+        LibraryEntry tmp = arr[i];
+        int16_t j = (int16_t)i - 1;
+        while(j >= 0 && cmp(&arr[j], &tmp) > 0) {
+            arr[j + 1] = arr[j];
+            j--;
+        }
+        arr[j + 1] = tmp;
+    }
 }
 
 void library_view_apply_sort(LibraryView* v, LibrarySort sort) {
@@ -290,13 +304,12 @@ void library_view_apply_sort(LibraryView* v, LibrarySort sort) {
         v->view, LibraryModel * m, {
             m->sort = sort;
             switch(sort) {
-            case SortModeName:     qsort(m->entries, m->count, sizeof(LibraryEntry), cmp_name); break;
-            case SortModeRecent:   qsort(m->entries, m->count, sizeof(LibraryEntry), cmp_recent); break;
-            case SortModeProgress: qsort(m->entries, m->count, sizeof(LibraryEntry), cmp_progress); break;
+            case SortModeName:     library_sort_with(m->entries, m->count, cmp_name); break;
+            case SortModeRecent:   library_sort_with(m->entries, m->count, cmp_recent); break;
+            case SortModeProgress: library_sort_with(m->entries, m->count, cmp_progress); break;
             case SortModeFavoritesFirst: {
-                /* In-place partition: favourites first, name-sorted within
-                 * each partition. */
-                qsort(m->entries, m->count, sizeof(LibraryEntry), cmp_name);
+                /* Name-sorted within each partition (favourites first). */
+                library_sort_with(m->entries, m->count, cmp_name);
                 LibraryEntry tmp[LIBRARY_VIEW_MAX];
                 uint16_t k = 0;
                 for(uint16_t i = 0; i < m->count; ++i) {
