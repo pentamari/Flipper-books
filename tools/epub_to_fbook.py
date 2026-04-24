@@ -65,7 +65,12 @@ class ImageOut:
 class _TextExtractor(HTMLParser):
     """Very small HTML->text converter that keeps paragraph breaks and notes images."""
 
-    SKIP_TAGS = {"script", "style", "head", "nav", "meta", "link"}
+    SKIP_TAGS = {"script", "style", "head", "nav"}
+    # Void elements per HTML spec - they can't have descendants. We do NOT track
+    # a skip-depth for them, otherwise an XHTML-style self-closing <meta/> or
+    # <link/> in <head> (which has no matching end tag) leaves the parser stuck
+    # in skip mode forever and the entire body of the book is silently dropped.
+    VOID_SKIP_TAGS = {"meta", "link", "base", "param", "source", "track"}
     BLOCK_TAGS = {
         "p", "div", "section", "article", "li", "ul", "ol",
         "h1", "h2", "h3", "h4", "h5", "h6", "br", "hr", "blockquote",
@@ -80,8 +85,12 @@ class _TextExtractor(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         tag = tag.lower()
+        if tag in self.VOID_SKIP_TAGS:
+            return
         if tag in self.SKIP_TAGS:
             self._skip_depth += 1
+            return
+        if self._skip_depth:
             return
         if tag == "img" and self._image_hook:
             src = dict(attrs).get("src")
@@ -95,18 +104,30 @@ class _TextExtractor(HTMLParser):
 
     def handle_endtag(self, tag):
         tag = tag.lower()
+        if tag in self.VOID_SKIP_TAGS:
+            return
         if tag in self.SKIP_TAGS:
             if self._skip_depth > 0:
                 self._skip_depth -= 1
+            return
+        if self._skip_depth:
             return
         if tag in self.BLOCK_TAGS:
             self.chunks.append("\n")
 
     def handle_startendtag(self, tag, attrs):
-        if tag.lower() == "br":
-            self.chunks.append("\n")
-        else:
-            self.handle_starttag(tag, attrs)
+        tl = tag.lower()
+        if tl == "br":
+            if not self._skip_depth:
+                self.chunks.append("\n")
+            return
+        if tl in self.VOID_SKIP_TAGS:
+            return
+        if tl in self.SKIP_TAGS:
+            # Self-closing <head/> etc. has no descendants, no skip context.
+            return
+        # img, hr and friends: run start logic only.
+        self.handle_starttag(tag, attrs)
 
     def handle_data(self, data):
         if self._skip_depth:

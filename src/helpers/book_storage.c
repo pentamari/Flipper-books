@@ -125,6 +125,13 @@ bool fbook_open(FBook* b, const char* path) {
         fbook_close(b);
         return false;
     }
+    /* Reject obviously empty bodies up front rather than letting the reader
+     * paint a blank page. This catches .fbook files written by older buggy
+     * converters that produced a valid header but no text. */
+    if(b->text_length == 0) {
+        fbook_close(b);
+        return false;
+    }
     return true;
 }
 
