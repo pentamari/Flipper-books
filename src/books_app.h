@@ -70,6 +70,10 @@ typedef struct {
 
     char text_input_buf[64];
 
+    /* Pending value for the goto-percent picker, read by the scene's
+     * on_event handler after the user confirms. */
+    uint8_t goto_percent_pending;
+
     bool library_delete_mode;
     char pending_delete_path[256];
     char pending_delete_name[64];
