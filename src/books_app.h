@@ -67,6 +67,10 @@ typedef struct {
 
     char text_input_buf[64];
 
+    bool library_delete_mode;
+    char pending_delete_path[256];
+    char pending_delete_name[64];
+
     uint32_t session_start_tick;
 } BooksApp;
 

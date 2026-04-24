@@ -14,6 +14,7 @@ typedef struct {
 
 typedef struct {
     uint32_t offset;         // last reading byte offset
+    uint32_t page;           // last rendered page number
     uint32_t total_bytes;    // content size
     uint32_t last_read;
     uint16_t last_chapter;

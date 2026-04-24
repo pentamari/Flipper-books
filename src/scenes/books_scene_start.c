@@ -1,6 +1,14 @@
 #include "../books_app.h"
 
-enum { ItemContinue, ItemLibrary, ItemImport, ItemSettings, ItemStats, ItemAbout };
+enum {
+    ItemContinue,
+    ItemLibrary,
+    ItemImport,
+    ItemDelete,
+    ItemSettings,
+    ItemStats,
+    ItemAbout,
+};
 
 static void submenu_cb(void* ctx, uint32_t index) {
     BooksApp* app = ctx;
@@ -9,6 +17,7 @@ static void submenu_cb(void* ctx, uint32_t index) {
 
 void books_scene_start_on_enter(void* ctx) {
     BooksApp* app = ctx;
+    app->library_delete_mode = false;
     Submenu* m = app->submenu;
     submenu_reset(m);
     submenu_set_header(m, "Books");
@@ -17,6 +26,7 @@ void books_scene_start_on_enter(void* ctx) {
     }
     submenu_add_item(m, "Library", ItemLibrary, submenu_cb, app);
     submenu_add_item(m, "Import / Rescan", ItemImport, submenu_cb, app);
+    submenu_add_item(m, "Delete Book", ItemDelete, submenu_cb, app);
     submenu_add_item(m, "Settings", ItemSettings, submenu_cb, app);
     submenu_add_item(m, "Reading Stats", ItemStats, submenu_cb, app);
     submenu_add_item(m, "About", ItemAbout, submenu_cb, app);
@@ -31,10 +41,15 @@ bool books_scene_start_on_event(void* ctx, SceneManagerEvent event) {
             scene_manager_next_scene(app->scene_manager, BooksSceneReader);
             return true;
         case ItemLibrary:
+            app->library_delete_mode = false;
             scene_manager_next_scene(app->scene_manager, BooksSceneLibrary);
             return true;
         case ItemImport:
             scene_manager_next_scene(app->scene_manager, BooksSceneImport);
+            return true;
+        case ItemDelete:
+            app->library_delete_mode = true;
+            scene_manager_next_scene(app->scene_manager, BooksSceneLibrary);
             return true;
         case ItemSettings:
             scene_manager_next_scene(app->scene_manager, BooksSceneSettings);

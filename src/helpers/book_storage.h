@@ -92,3 +92,7 @@ bool fbook_import_epub(const char* epub_path, char* out_path, size_t out_len);
 
 /** Enumerate candidate books in the library dir. Returns count copied into paths. */
 uint16_t fbook_scan_library(char paths[][256], uint16_t max_paths);
+
+/** Delete a book file plus its cached .fbook (if any) and its progress sidecar.
+ *  Returns true if at least the primary file was removed. */
+bool fbook_delete(const char* book_path);

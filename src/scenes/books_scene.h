@@ -38,5 +38,8 @@ typedef enum {
     BooksEventSearchNext,
     BooksEventImportScan,
     BooksEventBackToLibrary,
+    BooksEventConfirmDelete,
+    BooksEventDoDelete,
+    BooksEventCancelDelete,
     BooksEventExit,
 } BooksCustomEvent;

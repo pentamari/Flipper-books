@@ -309,6 +309,30 @@ bool fbook_import_epub(const char* epub_path, char* out_path, size_t out_len) {
     return ok;
 }
 
+bool fbook_delete(const char* book_path) {
+    if(!book_path || !*book_path) return false;
+    Storage* storage = furi_record_open(RECORD_STORAGE);
+
+    bool primary_ok = storage_simply_remove(storage, book_path);
+
+    /* Remove the cached .fbook derived from this file's basename. */
+    char cached[256];
+    cache_path_for(book_path, cached, sizeof(cached));
+    if(strcmp(cached, book_path) != 0) {
+        storage_simply_remove(storage, cached);
+    }
+
+    /* Remove the progress sidecar for this book. */
+    const char* slash = strrchr(book_path, '/');
+    const char* name = slash ? slash + 1 : book_path;
+    char prg[256];
+    snprintf(prg, sizeof(prg), "%s/%s.prg", BOOKS_PROGRESS, name);
+    storage_simply_remove(storage, prg);
+
+    furi_record_close(RECORD_STORAGE);
+    return primary_ok;
+}
+
 uint16_t fbook_scan_library(char paths[][256], uint16_t max_paths) {
     Storage* storage = furi_record_open(RECORD_STORAGE);
     storage_simply_mkdir(storage, BOOKS_LIBRARY);
