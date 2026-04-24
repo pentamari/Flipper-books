@@ -131,20 +131,17 @@ def _dither_to_1bpp(im) -> Tuple[int, int, bytes]:
         h = max(1, int(h * scale))
         im = im.resize((w, h))
     mono = im.convert("1")
-    pixels = mono.tobytes()
-    # PIL packs 1bpp MSB-first already; but rows are padded to full bytes per row.
-    # We repack tightly: row-major, MSB-first.
+    # Flipper's canvas_draw_xbm expects XBM byte order: LSB-first within each
+    # byte (bit 0 = leftmost pixel). PIL packs 1bpp MSB-first, so we pack
+    # pixel-by-pixel in LSB-first order. Black in PIL 1bpp is 0; in XBM a set
+    # bit means "pixel drawn" (black on the e-ink-ish LCD).
     row_bytes = (w + 7) // 8
-    padded_row = (w + 7) // 8  # PIL uses same - but row padding differs on some builds.
-    if len(pixels) == row_bytes * h:
-        return w, h, pixels
-    # Fallback: repack pixel by pixel.
     out = bytearray(row_bytes * h)
     px = mono.load()
     for y in range(h):
         for x in range(w):
-            if px[x, y] == 0:  # 0 = black in PIL 1bpp
-                out[y * row_bytes + (x >> 3)] |= 0x80 >> (x & 7)
+            if px[x, y] == 0:  # black
+                out[y * row_bytes + (x >> 3)] |= 1 << (x & 7)
     return w, h, bytes(out)
 
 
