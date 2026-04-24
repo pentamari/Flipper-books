@@ -32,6 +32,12 @@ AUTHOR_LEN = 48
 CHAPTER_TITLE_LEN = 32
 IMAGE_MAX_WIDTH = 120
 IMAGE_MAX_HEIGHT = 48
+# Must match FBOOK_MAX_CHAPTERS / FBOOK_MAX_IMAGES in src/helpers/book_storage.h.
+# If a book exceeds these, the on-device reader silently drops the excess, so we
+# truncate here too - otherwise the file pointer desyncs and the reader can
+# render garbage or nothing at all.
+MAX_CHAPTERS = 128
+MAX_IMAGES = 64
 
 NS = {
     "opf": "http://www.idpf.org/2007/opf",
@@ -238,6 +244,8 @@ def convert(
                 if full in image_cache:
                     idx = image_cache[full]
                 else:
+                    if len(images) >= MAX_IMAGES:
+                        return None
                     try:
                         data = zf.read(full)
                     except KeyError:
@@ -258,7 +266,8 @@ def convert(
             text = parser.get_text()
 
             chapter_start = len(text_buf)
-            chapters.append(ChapterOut(offset=chapter_start, title=chap_title))
+            if len(chapters) < MAX_CHAPTERS:
+                chapters.append(ChapterOut(offset=chapter_start, title=chap_title))
 
             pos = 0
             for m in placeholder_re.finditer(text):

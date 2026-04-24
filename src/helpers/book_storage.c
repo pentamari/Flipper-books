@@ -212,13 +212,13 @@ static void write_u32(File* f, uint32_t v) {
 }
 
 static void write_fixed(File* f, const char* s, size_t n) {
+    uint8_t buf[128];
+    if(n > sizeof(buf)) n = sizeof(buf);
     size_t l = strlen(s);
     if(l > n) l = n;
-    storage_file_write(f, s, l);
-    for(size_t i = l; i < n; ++i) {
-        uint8_t z = 0;
-        storage_file_write(f, &z, 1);
-    }
+    memset(buf, 0, n);
+    memcpy(buf, s, l);
+    storage_file_write(f, buf, n);
 }
 
 static bool write_fbook_header(
@@ -265,18 +265,26 @@ bool fbook_import_txt(const char* txt_path, char* out_path, size_t out_len) {
        storage_file_open(out, dst, FSAM_WRITE, FSOM_CREATE_ALWAYS)) {
         uint32_t total = storage_file_size(in);
         uint32_t header_size = FBOOK_MAGIC_LEN + 2 + FBOOK_MAX_TITLE + FBOOK_MAX_AUTHOR + 4 + 4 + 2 + 2;
-        write_fbook_header(out, basename_of(txt_path), "Unknown", total, header_size);
+        /* storage_file_size can leave the read cursor anywhere; anchor it. */
+        storage_file_seek(in, 0, true);
+        bool header_ok = write_fbook_header(out, basename_of(txt_path), "Unknown", total, header_size);
 
         uint8_t buf[256];
         uint32_t remaining = total;
-        while(remaining > 0) {
+        ok = header_ok;
+        while(ok && remaining > 0) {
             uint32_t want = remaining > sizeof(buf) ? sizeof(buf) : remaining;
-            uint32_t got = storage_file_read(in, buf, want);
-            if(!got) break;
-            storage_file_write(out, buf, got);
+            uint16_t got = storage_file_read(in, buf, (uint16_t)want);
+            if(!got) {
+                ok = false;
+                break;
+            }
+            if(storage_file_write(out, buf, got) != got) {
+                ok = false;
+                break;
+            }
             remaining -= got;
         }
-        ok = true;
     }
     storage_file_close(in);
     storage_file_close(out);

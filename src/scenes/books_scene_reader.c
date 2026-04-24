@@ -1,6 +1,13 @@
 #include "../books_app.h"
+#include <string.h>
+#include <strings.h>
 
 static FBook* g_book = NULL;
+
+static void open_fail_popup_cb(void* ctx) {
+    BooksApp* app = ctx;
+    view_dispatcher_send_custom_event(app->view_dispatcher, BooksEventCloseBook);
+}
 
 static void reader_event_cb(ReaderPublicEvent ev, void* ctx) {
     BooksApp* app = ctx;
@@ -33,10 +40,21 @@ void books_scene_reader_on_enter(void* ctx) {
         g_book = fbook_alloc();
     }
     if(!fbook_open(g_book, app->current_book_path)) {
-        // failed to open - show popup
+        // failed to open - show popup that returns to the library after a tap or timeout
         popup_reset(app->popup);
+        const char* dot = strrchr(app->current_book_path, '.');
+        bool is_epub = dot && strcasecmp(dot, BOOKS_EXT_EPUB) == 0;
         popup_set_header(app->popup, "Cannot open", 64, 8, AlignCenter, AlignTop);
-        popup_set_text(app->popup, "Convert EPUB\nwith epub_to_fbook.py", 64, 28, AlignCenter, AlignTop);
+        popup_set_text(
+            app->popup,
+            is_epub ? "Run epub_to_fbook.py\nand drop the .fbook in"
+                    : "File is missing or\nnot a valid book",
+            64,
+            28,
+            AlignCenter,
+            AlignTop);
+        popup_set_context(app->popup, app);
+        popup_set_callback(app->popup, open_fail_popup_cb);
         popup_set_timeout(app->popup, 2500);
         popup_enable_timeout(app->popup);
         view_dispatcher_switch_to_view(app->view_dispatcher, BooksViewPopup);

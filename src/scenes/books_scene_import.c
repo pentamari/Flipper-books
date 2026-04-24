@@ -7,7 +7,7 @@ void books_scene_import_on_enter(void* ctx) {
     popup_reset(p);
     popup_set_header(p, "Scanning...", 64, 8, AlignCenter, AlignTop);
 
-    char paths[32][256];
+    static char paths[32][256];
     uint16_t n = fbook_scan_library(paths, 32);
 
     static char summary[64];
