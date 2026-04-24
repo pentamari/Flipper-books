@@ -6,7 +6,8 @@
 #include <string.h>
 #include <stdio.h>
 
-#define PROGRESS_MAGIC 0x50524731u /* 'PRG1' */
+#define PROGRESS_MAGIC_V1 0x50524731u /* 'PRG1' */
+#define PROGRESS_MAGIC_V2 0x50524732u /* 'PRG2' */
 
 void book_progress_set_defaults(BookProgress* p) {
     memset(p, 0, sizeof(*p));
@@ -32,7 +33,8 @@ bool book_progress_load(const char* book_path, BookProgress* p) {
     bool ok = false;
     if(storage_file_open(f, path, FSAM_READ, FSOM_OPEN_EXISTING)) {
         ProgressBlob b;
-        if(storage_file_read(f, &b, sizeof(b)) == sizeof(b) && b.magic == PROGRESS_MAGIC) {
+        if(storage_file_read(f, &b, sizeof(b)) == sizeof(b) &&
+           (b.magic == PROGRESS_MAGIC_V2 || b.magic == PROGRESS_MAGIC_V1)) {
             *p = b.data;
             ok = true;
         }
@@ -52,7 +54,7 @@ bool book_progress_save(const char* book_path, const BookProgress* p) {
     File* f = storage_file_alloc(storage);
     bool ok = false;
     if(storage_file_open(f, path, FSAM_WRITE, FSOM_CREATE_ALWAYS)) {
-        ProgressBlob b = {.magic = PROGRESS_MAGIC, .version = 1, .data = *p};
+        ProgressBlob b = {.magic = PROGRESS_MAGIC_V2, .version = 2, .data = *p};
         ok = storage_file_write(f, &b, sizeof(b)) == sizeof(b);
         storage_file_close(f);
     }
@@ -78,5 +80,19 @@ bool book_progress_remove_bookmark(BookProgress* p, uint16_t index) {
         p->bookmarks[i] = p->bookmarks[i + 1];
     }
     p->bookmark_count--;
+    return true;
+}
+
+bool book_progress_load_summary(const char* book_path,
+                                uint32_t* offset,
+                                uint32_t* total_bytes,
+                                uint32_t* last_read,
+                                uint8_t* favorite) {
+    BookProgress p;
+    if(!book_progress_load(book_path, &p)) return false;
+    if(offset) *offset = p.offset;
+    if(total_bytes) *total_bytes = p.total_bytes;
+    if(last_read) *last_read = p.last_read;
+    if(favorite) *favorite = p.favorite;
     return true;
 }

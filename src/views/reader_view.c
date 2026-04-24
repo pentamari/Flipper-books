@@ -173,9 +173,11 @@ static bool pop_page(PageStack* s, uint32_t* out) {
 
 static void draw_night(Canvas* c, const BookSettings* s) {
     if(s->night_mode) {
-        canvas_set_color(c, ColorWhite);
-        canvas_draw_box(c, 0, 0, READER_W, READER_H);
+        /* Fill the background with pixels-on so subsequent ColorWhite
+         * (pixels-off) draws show through as light text on a dark page. */
         canvas_set_color(c, ColorBlack);
+        canvas_draw_box(c, 0, 0, READER_W, READER_H);
+        canvas_set_color(c, ColorWhite);
     }
 }
 
@@ -264,8 +266,10 @@ static void draw_image_on_page(Canvas* c, ReaderModel* m) {
     if(stored_w > READER_W || stored_h > READER_H) return;
 
     uint16_t w, h;
-    uint8_t* data = fbook_load_image(m->book, idx, &w, &h);
+    uint8_t fmt = 0;
+    uint8_t* data = fbook_load_image(m->book, idx, &w, &h, &fmt);
     if(!data) return;
+    (void)fmt; /* 2bpp rendering is added below; for now treat all as XBM. */
 
     uint16_t draw_w = w > READER_W ? READER_W : w;
     uint16_t draw_h = h > 32 ? 32 : h;
