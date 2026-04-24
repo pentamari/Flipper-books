@@ -14,6 +14,7 @@ App(
     fap_description="EPUB book reader with bookmarks, TOC, search, night mode, auto-scroll and power saving.",
     fap_author="minerofthesoal",
     fap_version="1.0",
+    fap_icon="icon.png",
     sources=[
         "src/*.c",
         "src/scenes/*.c",
