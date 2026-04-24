@@ -80,11 +80,34 @@ void books_scene_reader_on_enter(void* ctx) {
 
 static void save_progress(BooksApp* app) {
     if(!g_book) return;
+    uint32_t prev_offset = app->progress.offset;
     app->progress.offset = reader_view_get_offset(app->reader);
     app->progress.page = reader_view_get_page(app->reader);
     app->progress.total_bytes = g_book->text_length;
     app->progress.last_read = furi_get_tick();
     app->progress.last_chapter = fbook_find_chapter(g_book, app->progress.offset);
+    app->progress.words_in_book = g_book->word_count;
+    app->progress.pages_turned++;
+
+    /* Count just the new words covered since the last save into the global
+     * stats so reading speed is measured against material we're sure was
+     * read forward (skip backwards/jumps). */
+    if(app->progress.offset > prev_offset && g_book->text_length > 0 &&
+       g_book->word_count > 0) {
+        uint32_t delta_bytes = app->progress.offset - prev_offset;
+        uint32_t delta_words =
+            (uint32_t)((uint64_t)delta_bytes * g_book->word_count /
+                       g_book->text_length);
+        app->stats.total_words_read += delta_words;
+    }
+
+    if(!app->progress.finished &&
+       g_book->text_length > 0 &&
+       app->progress.offset >= g_book->text_length - 16) {
+        app->progress.finished = 1;
+        app->stats.books_finished++;
+    }
+
     book_progress_save(app->current_book_path, &app->progress);
     app->stats.total_pages_read++;
 }

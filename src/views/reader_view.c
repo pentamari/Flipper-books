@@ -32,12 +32,20 @@ typedef struct {
     uint32_t page_offset;      // start of current page
     uint32_t page_end_offset;  // start of next page
     uint32_t page_number;
+    uint32_t total_pages_estimate; // updated after compute_page_end
 
     PageStack stack;
 
     // animation
     int8_t anim_dir; // -1 back, +1 forward, 0 none
     uint8_t anim_progress; // 0..100
+    /* Snapshot of the page we're animating away from so both pages can be
+     * rendered side-by-side during the transition. Without this the old
+     * page would simply disappear and the slide would be invisible. */
+    char prev_cache[512];
+    uint16_t prev_cache_len;
+    uint32_t prev_page_offset;
+    uint32_t prev_page_end_offset;
 
     // small draw cache of visible lines
     char cache[512];
@@ -47,19 +55,28 @@ typedef struct {
     bool show_bookmark_flash;
     uint32_t bookmark_flash_until;
     bool menu_prompt;
+
+    // sleep timer
+    uint32_t sleep_deadline_tick; // 0 = disabled
+    bool sleep_expired;
 } ReaderModel;
 
-static Font font_for_size(TextSize t) {
-    switch(t) {
-    case TextSizeTiny:
-    case TextSizeSmall:
+static Font font_for_settings(const BookSettings* s) {
+    switch(s->font_family) {
+    case FontFamilySerif: return FontPrimary;
+    case FontFamilySans:  return FontSecondary;
+    case FontFamilyDefault:
+    default:
+        switch(s->text_size) {
+        case TextSizeTiny:
+        case TextSizeSmall:
+            return FontSecondary;
+        case TextSizeMedium:
+        case TextSizeLarge:
+            return FontPrimary;
+        }
         return FontSecondary;
-    case TextSizeMedium:
-        return FontPrimary;
-    case TextSizeLarge:
-        return FontPrimary;
     }
-    return FontSecondary;
 }
 
 static uint8_t line_height_for_size(TextSize t) {
@@ -156,6 +173,18 @@ static void compute_page_end(ReaderModel* m) {
     if(m->page_end_offset > m->book->text_length) m->page_end_offset = m->book->text_length;
 }
 
+/* Capture the current page's text into the snapshot used by the transition
+ * animation, so the outgoing page is still drawable while the incoming page
+ * slides in. Called immediately before page_offset is updated. */
+static void snapshot_current_page(ReaderModel* m) {
+    uint16_t n = m->cache_len;
+    if(n > sizeof(m->prev_cache)) n = sizeof(m->prev_cache);
+    memcpy(m->prev_cache, m->cache, n);
+    m->prev_cache_len = n;
+    m->prev_page_offset = m->page_offset;
+    m->prev_page_end_offset = m->page_end_offset;
+}
+
 static void push_page(PageStack* s, uint32_t offset) {
     if(s->count < PAGE_STACK) {
         s->offsets[s->count++] = offset;
@@ -173,47 +202,72 @@ static bool pop_page(PageStack* s, uint32_t* out) {
 
 static void draw_night(Canvas* c, const BookSettings* s) {
     if(s->night_mode) {
-        canvas_set_color(c, ColorWhite);
-        canvas_draw_box(c, 0, 0, READER_W, READER_H);
+        /* Fill the background with pixels-on so subsequent ColorWhite
+         * (pixels-off) draws show through as light text on a dark page. */
         canvas_set_color(c, ColorBlack);
+        canvas_draw_box(c, 0, 0, READER_W, READER_H);
+        canvas_set_color(c, ColorWhite);
     }
 }
 
-static void draw_text_page(Canvas* c, ReaderModel* m, int16_t x_offset) {
-    canvas_set_font(c, font_for_size(m->settings->text_size));
+/* Draw lines from a buffer at a given screen x-offset. Used for both the
+ * current page and (during a slide animation) the previous page snapshot.
+ * `reserve_top` is the pixel height to skip at the top of the screen for an
+ * inline image; `text_len` is the number of bytes in `buf` that belong to the
+ * page (i.e. up to its computed page_end). */
+static void draw_text_buffer(
+    Canvas* c,
+    const ReaderModel* m,
+    const char* buf,
+    uint16_t text_len,
+    int16_t x_offset,
+    uint8_t reserve_top) {
+    canvas_set_font(c, font_for_settings(m->settings));
     uint8_t lh = line_height_for_size(m->settings->text_size);
+    /* Apply line spacing setting. */
+    switch(m->settings->line_spacing) {
+    case LineSpacingTight:  if(lh > 1) lh -= 1; break;
+    case LineSpacingNormal: break;
+    case LineSpacingLoose:  lh += 1; break;
+    case LineSpacingDouble: lh += 3; break;
+    }
     uint8_t mcpl = max_chars_per_line(m->settings->text_size);
-
-    uint8_t reserve = image_top_reserve(m);
-    if(reserve > 0 && reserve + 2 < READER_H) reserve += 2; // breathing room
+    /* Margin shifts the inner column. Compact (no margin) lets us fit a few
+     * extra characters per line at the smaller text sizes. */
+    uint8_t left_pad = 1;
+    switch(m->settings->margin) {
+    case MarginCompact: left_pad = 0; break;
+    case MarginNormal:  left_pad = 1; break;
+    case MarginWide:    left_pad = 4; if(mcpl > 4) mcpl -= 2; break;
+    }
 
     uint16_t i = 0;
     uint16_t lines = 0;
-    int16_t y = reserve + lh - 1;
-    uint8_t avail_h = READER_H > reserve ? READER_H - reserve : lh;
+    int16_t y = reserve_top + lh - 1;
+    uint8_t avail_h = READER_H > reserve_top ? READER_H - reserve_top : lh;
     if(m->settings->show_progress_bar && avail_h > 3) avail_h -= 3;
     uint8_t max_lines = (uint8_t)(avail_h / lh);
     if(max_lines < 1) max_lines = 1;
 
-    char line[40];
-    uint16_t line_end = m->page_end_offset - m->page_offset;
+    char line[64];
+    uint16_t line_end = text_len;
     if(line_end > sizeof(m->cache) - 1) line_end = sizeof(m->cache) - 1;
 
     while(i < line_end && lines < max_lines) {
         uint16_t line_start = i;
         uint16_t col = 0;
-        while(i < line_end && m->cache[i] != '\n' && col < mcpl) {
+        while(i < line_end && buf[i] != '\n' && col < mcpl) {
             i++;
             col++;
         }
         uint16_t end = i;
         bool hard_nl = false;
-        if(i < line_end && m->cache[i] == '\n') {
+        if(i < line_end && buf[i] == '\n') {
             hard_nl = true;
             i++;
         } else if(col == mcpl && i < line_end) {
             uint16_t j = i;
-            while(j > line_start && m->cache[j] != ' ') j--;
+            while(j > line_start && buf[j] != ' ') j--;
             if(j > line_start) {
                 end = j;
                 i = j + 1;
@@ -221,19 +275,25 @@ static void draw_text_page(Canvas* c, ReaderModel* m, int16_t x_offset) {
         }
         uint16_t n = end - line_start;
         if(n >= sizeof(line)) n = sizeof(line) - 1;
-        memcpy(line, &m->cache[line_start], n);
+        memcpy(line, &buf[line_start], n);
         line[n] = '\0';
-        // strip trailing carriage return if any
         while(n > 0 && (line[n - 1] == '\r' || line[n - 1] == ' ')) {
             line[--n] = '\0';
         }
         if(m->settings->night_mode) canvas_set_color(c, ColorWhite);
         else canvas_set_color(c, ColorBlack);
-        canvas_draw_str(c, 1 + x_offset, y, line);
+        canvas_draw_str(c, left_pad + x_offset, y, line);
         y += lh;
         lines++;
-        if(!hard_nl && i < line_end && m->cache[i] == ' ') i++;
+        if(!hard_nl && i < line_end && buf[i] == ' ') i++;
     }
+}
+
+static void draw_text_page(Canvas* c, ReaderModel* m, int16_t x_offset) {
+    uint8_t reserve = image_top_reserve(m);
+    if(reserve > 0 && reserve + 2 < READER_H) reserve += 2;
+    uint16_t text_len = (uint16_t)(m->page_end_offset - m->page_offset);
+    draw_text_buffer(c, m, m->cache, text_len, x_offset, reserve);
 }
 
 static void draw_progress_bar(Canvas* c, const FBook* b, uint32_t offset, bool night) {
@@ -245,6 +305,22 @@ static void draw_progress_bar(Canvas* c, const FBook* b, uint32_t offset, bool n
     else canvas_set_color(c, ColorBlack);
     canvas_draw_frame(c, 0, READER_H - 2, READER_W, 2);
     canvas_draw_box(c, 1, READER_H - 2, w, 2);
+}
+
+/* Draws "p N  P%" in the top-right; used when show_page_number is enabled.
+ * Kept tiny so it doesn't eat into the visible text area. */
+static void draw_page_number(Canvas* c, const ReaderModel* m) {
+    if(!m->book || m->book->text_length == 0) return;
+    char buf[24];
+    uint32_t pct = (m->page_offset * 100) / m->book->text_length;
+    if(pct > 100) pct = 100;
+    snprintf(buf, sizeof(buf), "p%lu  %lu%%",
+             (unsigned long)(m->page_number + 1),
+             (unsigned long)pct);
+    canvas_set_font(c, FontSecondary);
+    if(m->settings->night_mode) canvas_set_color(c, ColorWhite);
+    else canvas_set_color(c, ColorBlack);
+    canvas_draw_str_aligned(c, READER_W - 1, 1, AlignRight, AlignTop, buf);
 }
 
 static void draw_image_on_page(Canvas* c, ReaderModel* m) {
@@ -264,8 +340,10 @@ static void draw_image_on_page(Canvas* c, ReaderModel* m) {
     if(stored_w > READER_W || stored_h > READER_H) return;
 
     uint16_t w, h;
-    uint8_t* data = fbook_load_image(m->book, idx, &w, &h);
+    uint8_t fmt = 0;
+    uint8_t* data = fbook_load_image(m->book, idx, &w, &h, &fmt);
     if(!data) return;
+    (void)fmt; /* 2bpp rendering is added below; for now treat all as XBM. */
 
     uint16_t draw_w = w > READER_W ? READER_W : w;
     uint16_t draw_h = h > 32 ? 32 : h;
@@ -286,11 +364,35 @@ static void render_callback(Canvas* c, void* ctx) {
         return;
     }
 
-    if(m->anim_dir != 0 &&
-       m->settings->page_animation != PageAnimNone &&
-       m->settings->power_mode == PowerModeGraphics) {
-        int16_t shift = (int16_t)((int32_t)m->anim_progress * READER_W / 100) * m->anim_dir;
-        draw_text_page(c, m, -shift);
+    bool animate = m->anim_dir != 0 &&
+                   m->settings->page_animation != PageAnimNone &&
+                   m->settings->power_mode != PowerModePowerSaver;
+    if(animate && m->settings->page_animation == PageAnimSlide) {
+        /* Slide: outgoing page slides off, incoming slides in. anim_progress
+         * runs 0..100. dir +1 means forward (next page in from right);
+         * dir -1 means back (previous page in from left). */
+        int16_t s = (int16_t)((int32_t)m->anim_progress * READER_W / 100);
+        uint16_t prev_text_len =
+            (uint16_t)(m->prev_page_end_offset - m->prev_page_offset);
+        if(m->anim_dir > 0) {
+            /* Outgoing slides left: at -s. Incoming slides in from right: W - s. */
+            draw_text_buffer(c, m, m->prev_cache, prev_text_len, -s, 0);
+            draw_text_page(c, m, READER_W - s);
+        } else {
+            /* Backward: outgoing slides right (s), incoming from left (s - W). */
+            draw_text_buffer(c, m, m->prev_cache, prev_text_len, s, 0);
+            draw_text_page(c, m, s - READER_W);
+        }
+    } else if(animate && m->settings->page_animation == PageAnimFade) {
+        /* Fade on a 1-bit screen: cross-dither between old and new every other
+         * column based on progress. Cheap but visible. */
+        if(m->anim_progress < 50) {
+            uint16_t prev_text_len =
+                (uint16_t)(m->prev_page_end_offset - m->prev_page_offset);
+            draw_text_buffer(c, m, m->prev_cache, prev_text_len, 0, 0);
+        } else {
+            draw_text_page(c, m, 0);
+        }
     } else {
         draw_text_page(c, m, 0);
     }
@@ -299,6 +401,9 @@ static void render_callback(Canvas* c, void* ctx) {
 
     if(m->settings->show_progress_bar) {
         draw_progress_bar(c, m->book, m->page_offset, m->settings->night_mode);
+    }
+    if(m->settings->show_page_number) {
+        draw_page_number(c, m);
     }
 
     if(m->show_bookmark_flash && furi_get_tick() < m->bookmark_flash_until) {
@@ -311,6 +416,7 @@ static void render_callback(Canvas* c, void* ctx) {
 
 static void anim_timer_cb(void* ctx) {
     ReaderView* r = ctx;
+    bool fire_sleep = false;
     with_view_model(
         r->view, ReaderModel * m, {
             if(m->anim_dir != 0) {
@@ -322,15 +428,25 @@ static void anim_timer_cb(void* ctx) {
                     if(m->anim_progress > 100) m->anim_progress = 100;
                 }
             }
+            if(m->sleep_deadline_tick && !m->sleep_expired &&
+               furi_get_tick() >= m->sleep_deadline_tick) {
+                m->sleep_expired = true;
+                fire_sleep = true;
+            }
         },
         true);
+    if(fire_sleep && r->event_cb) {
+        r->event_cb(ReaderEventBack, r->event_ctx);
+    }
 }
 
 static void auto_timer_cb(void* ctx) {
     ReaderView* r = ctx;
     with_view_model(
         r->view, ReaderModel * m, {
-            if(m->settings->auto_scroll && m->page_end_offset < m->book->text_length) {
+            if(m->settings && m->settings->auto_scroll && m->book &&
+               m->page_end_offset < m->book->text_length) {
+                snapshot_current_page(m);
                 push_page(&m->stack, m->page_offset);
                 m->page_offset = m->page_end_offset;
                 m->page_number++;
@@ -346,9 +462,53 @@ static void emit_event(ReaderView* r, ReaderPublicEvent ev) {
     if(r->event_cb) r->event_cb(ev, r->event_ctx);
 }
 
+/* Long-press helpers: jump to the previous/next chapter boundary. Bound to
+ * long-press Left / long-press Right in input_callback. */
+static void jump_to_chapter_offset(ReaderModel* m, uint32_t offset) {
+    snapshot_current_page(m);
+    push_page(&m->stack, m->page_offset);
+    m->page_offset = offset;
+    if(m->page_offset > m->book->text_length) m->page_offset = m->book->text_length;
+    compute_page_end(m);
+    m->anim_dir = 0;
+    m->anim_progress = 0;
+}
+
+static void jump_prev_chapter(ReaderModel* m) {
+    if(!m->book || m->book->chapter_count == 0) return;
+    uint16_t cur = fbook_find_chapter(m->book, m->page_offset);
+    /* If we're past a chapter's start, jump to the start of this one. */
+    if(m->book->chapters[cur].offset < m->page_offset) {
+        jump_to_chapter_offset(m, m->book->chapters[cur].offset);
+        return;
+    }
+    if(cur == 0) return;
+    jump_to_chapter_offset(m, m->book->chapters[cur - 1].offset);
+}
+
+static void jump_next_chapter(ReaderModel* m) {
+    if(!m->book || m->book->chapter_count == 0) return;
+    uint16_t cur = fbook_find_chapter(m->book, m->page_offset);
+    if(cur + 1 >= m->book->chapter_count) return;
+    jump_to_chapter_offset(m, m->book->chapters[cur + 1].offset);
+}
+
 static bool input_callback(InputEvent* evt, void* ctx) {
     ReaderView* r = ctx;
     bool consumed = false;
+
+    if(evt->type == InputTypeLong) {
+        if(evt->key == InputKeyLeft) {
+            with_view_model(
+                r->view, ReaderModel * m, { jump_prev_chapter(m); }, true);
+            return true;
+        }
+        if(evt->key == InputKeyRight) {
+            with_view_model(
+                r->view, ReaderModel * m, { jump_next_chapter(m); }, true);
+            return true;
+        }
+    }
 
     if(evt->type == InputTypeShort) {
         with_view_model(
@@ -356,6 +516,7 @@ static bool input_callback(InputEvent* evt, void* ctx) {
                 switch(evt->key) {
                 case InputKeyRight:
                     if(m->page_end_offset < m->book->text_length) {
+                        snapshot_current_page(m);
                         push_page(&m->stack, m->page_offset);
                         m->page_offset = m->page_end_offset;
                         m->page_number++;
@@ -368,6 +529,7 @@ static bool input_callback(InputEvent* evt, void* ctx) {
                 case InputKeyLeft: {
                     uint32_t prev;
                     if(pop_page(&m->stack, &prev)) {
+                        snapshot_current_page(m);
                         m->page_offset = prev;
                         if(m->page_number > 0) m->page_number--;
                         compute_page_end(m);
@@ -463,6 +625,17 @@ void reader_view_set_settings(ReaderView* r, const BookSettings* settings) {
             } else {
                 furi_timer_stop(r->auto_timer);
             }
+            /* (Re)compute the sleep timer deadline whenever settings change.
+             * 0 = disabled. Timer is checked from anim_timer_cb. */
+            if(settings->sleep_timer_minutes == 0) {
+                m->sleep_deadline_tick = 0;
+            } else {
+                uint32_t freq = furi_kernel_get_tick_frequency();
+                m->sleep_deadline_tick =
+                    furi_get_tick() +
+                    (uint32_t)settings->sleep_timer_minutes * 60u * freq;
+            }
+            m->sleep_expired = false;
             if(m->book) compute_page_end(m);
         },
         true);

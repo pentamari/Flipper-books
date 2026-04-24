@@ -17,6 +17,7 @@
 
 #include "scenes/books_scene.h"
 #include "views/reader_view.h"
+#include "views/library_view.h"
 #include "helpers/book_storage.h"
 #include "helpers/book_settings.h"
 #include "helpers/book_progress.h"
@@ -40,6 +41,7 @@ typedef enum {
     BooksViewDialog,
     BooksViewPopup,
     BooksViewReader,
+    BooksViewLibrary,
 } BooksView;
 
 typedef struct {
@@ -57,6 +59,7 @@ typedef struct {
     DialogEx* dialog;
     Popup* popup;
     ReaderView* reader;
+    LibraryView* library;
 
     BookSettings settings;
     BookStats stats;
@@ -66,6 +69,10 @@ typedef struct {
     BookProgress progress;
 
     char text_input_buf[64];
+
+    /* Pending value for the goto-percent picker, read by the scene's
+     * on_event handler after the user confirms. */
+    uint8_t goto_percent_pending;
 
     bool library_delete_mode;
     char pending_delete_path[256];

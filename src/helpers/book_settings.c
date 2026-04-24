@@ -4,10 +4,11 @@
 #include <furi.h>
 #include <string.h>
 
-#define SETTINGS_MAGIC 0x424F4B31u /* 'BOK1' */
-#define STATS_MAGIC    0x53544154u /* 'STAT' */
+#define SETTINGS_MAGIC 0x424F4B32u /* 'BOK2' - bumped for new fields */
+#define STATS_MAGIC    0x53544132u /* 'STA2' */
 
 void book_settings_set_defaults(BookSettings* s) {
+    memset(s, 0, sizeof(*s));
     s->power_mode = PowerModeBalanced;
     s->page_animation = PageAnimSlide;
     s->text_size = TextSizeSmall;
@@ -20,6 +21,15 @@ void book_settings_set_defaults(BookSettings* s) {
     s->hyphenate = true;
     s->show_progress_bar = true;
     s->vibrate_page_turn = false;
+
+    s->line_spacing = LineSpacingNormal;
+    s->font_family = FontFamilyDefault;
+    s->margin = MarginNormal;
+    s->show_page_number = true;
+    s->show_clock = false;
+    s->sleep_timer_minutes = 0;
+    s->library_sort = SortModeRecent;
+    s->show_covers_in_library = true;
 }
 
 static bool write_all(Storage* storage, const char* path, const void* data, size_t len) {
@@ -67,7 +77,7 @@ bool book_settings_load(BookSettings* s) {
 bool book_settings_save(const BookSettings* s) {
     Storage* storage = furi_record_open(RECORD_STORAGE);
     storage_simply_mkdir(storage, BOOKS_APP_FOLDER);
-    SettingsBlob b = {.magic = SETTINGS_MAGIC, .version = 1, .data = *s};
+    SettingsBlob b = {.magic = SETTINGS_MAGIC, .version = 2, .data = *s};
     bool ok = write_all(storage, BOOKS_SETTINGS_FILE, &b, sizeof(b));
     furi_record_close(RECORD_STORAGE);
     return ok;
@@ -100,7 +110,7 @@ bool book_stats_load(BookStats* s) {
 bool book_stats_save(const BookStats* s) {
     Storage* storage = furi_record_open(RECORD_STORAGE);
     storage_simply_mkdir(storage, BOOKS_APP_FOLDER);
-    StatsBlob b = {.magic = STATS_MAGIC, .version = 1, .data = *s};
+    StatsBlob b = {.magic = STATS_MAGIC, .version = 2, .data = *s};
     bool ok = write_all(storage, BOOKS_STATS_FILE, &b, sizeof(b));
     furi_record_close(RECORD_STORAGE);
     return ok;
@@ -143,4 +153,42 @@ uint8_t text_size_pixels(TextSize t) {
     case TextSizeLarge:  return 12;
     }
     return 7;
+}
+
+const char* font_family_name(FontFamily f) {
+    switch(f) {
+    case FontFamilyDefault: return "Auto";
+    case FontFamilySerif:   return "Serif";
+    case FontFamilySans:    return "Sans";
+    }
+    return "?";
+}
+
+const char* line_spacing_name(LineSpacing l) {
+    switch(l) {
+    case LineSpacingTight:  return "Tight";
+    case LineSpacingNormal: return "Normal";
+    case LineSpacingLoose:  return "Loose";
+    case LineSpacingDouble: return "Double";
+    }
+    return "?";
+}
+
+const char* margin_name(MarginSize m) {
+    switch(m) {
+    case MarginCompact: return "None";
+    case MarginNormal:  return "Normal";
+    case MarginWide:    return "Wide";
+    }
+    return "?";
+}
+
+const char* library_sort_name(LibrarySort s) {
+    switch(s) {
+    case SortModeName:           return "Name";
+    case SortModeRecent:         return "Recent";
+    case SortModeProgress:       return "Progress";
+    case SortModeFavoritesFirst: return "Stars";
+    }
+    return "?";
 }

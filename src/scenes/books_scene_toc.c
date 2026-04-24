@@ -1,6 +1,10 @@
 #include "../books_app.h"
+#include <stdio.h>
 
 static FBook* cached_book;
+/* Submenu only stores a pointer to the label string, so we keep our own
+ * static buffers alive for the whole scene. */
+static char toc_labels[FBOOK_MAX_CHAPTERS][80];
 
 static void submenu_cb(void* ctx, uint32_t index) {
     BooksApp* app = ctx;
@@ -25,7 +29,15 @@ void books_scene_toc_on_enter(void* ctx) {
         submenu_add_item(m, "(no chapters)", 0xFFFF, NULL, app);
     } else {
         for(uint16_t i = 0; i < cached_book->chapter_count; ++i) {
-            submenu_add_item(m, cached_book->chapters[i].title, i, submenu_cb, app);
+            const char* title = cached_book->chapters[i].title;
+            uint32_t wc = cached_book->chapters[i].word_count;
+            if(wc > 0) {
+                snprintf(toc_labels[i], sizeof(toc_labels[i]),
+                         "%s (%lu w)", title, (unsigned long)wc);
+            } else {
+                snprintf(toc_labels[i], sizeof(toc_labels[i]), "%s", title);
+            }
+            submenu_add_item(m, toc_labels[i], i, submenu_cb, app);
         }
     }
     view_dispatcher_switch_to_view(app->view_dispatcher, BooksViewSubmenu);

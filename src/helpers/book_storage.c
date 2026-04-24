@@ -7,8 +7,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#define FBOOK_CHAPTER_SIZE 36
-#define FBOOK_IMAGE_SIZE   16
+#define FBOOK_V1_HEADER_SIZE  (FBOOK_MAGIC_LEN + 2 + FBOOK_MAX_TITLE + FBOOK_MAX_AUTHOR + 4 + 4 + 2 + 2)
+#define FBOOK_V2_HEADER_SIZE  224
+
+#define FBOOK_V1_CHAPTER_SIZE 36
+#define FBOOK_V1_IMAGE_SIZE   12
+#define FBOOK_V2_CHAPTER_SIZE (4 + 4 + FBOOK_CHAPTER_TITLE_V2)  // 56
+#define FBOOK_V2_IMAGE_SIZE   (4 + 2 + 2 + 4 + 4 + 1 + 3)        // 20
 
 FBook* fbook_alloc(void) {
     FBook* b = malloc(sizeof(FBook));
@@ -35,56 +40,190 @@ void fbook_close(FBook* b) {
 }
 
 static uint16_t read_u16(File* f) {
-    uint8_t buf[2];
+    uint8_t buf[2] = {0};
     storage_file_read(f, buf, 2);
     return (uint16_t)buf[0] | ((uint16_t)buf[1] << 8);
 }
 
 static uint32_t read_u32(File* f) {
-    uint8_t buf[4];
+    uint8_t buf[4] = {0};
     storage_file_read(f, buf, 4);
-    return (uint32_t)buf[0] | ((uint32_t)buf[1] << 8) | ((uint32_t)buf[2] << 16) | ((uint32_t)buf[3] << 24);
+    return (uint32_t)buf[0] | ((uint32_t)buf[1] << 8) |
+           ((uint32_t)buf[2] << 16) | ((uint32_t)buf[3] << 24);
 }
 
-static bool parse_header(FBook* b) {
-    char magic[FBOOK_MAGIC_LEN];
-    if(storage_file_read(b->file, magic, FBOOK_MAGIC_LEN) != FBOOK_MAGIC_LEN) return false;
-    if(memcmp(magic, FBOOK_MAGIC, FBOOK_MAGIC_LEN) != 0) return false;
-    uint16_t version = read_u16(b->file);
-    if(version != 1) return false;
+static uint8_t read_u8(File* f) {
+    uint8_t b = 0;
+    storage_file_read(f, &b, 1);
+    return b;
+}
 
+static bool parse_header_v1(FBook* b) {
+    /* Magic + version already consumed. */
     if(storage_file_read(b->file, b->title, FBOOK_MAX_TITLE) != FBOOK_MAX_TITLE) return false;
     if(storage_file_read(b->file, b->author, FBOOK_MAX_AUTHOR) != FBOOK_MAX_AUTHOR) return false;
     b->title[FBOOK_MAX_TITLE - 1] = '\0';
     b->author[FBOOK_MAX_AUTHOR - 1] = '\0';
+    b->language[0] = '\0';
 
     b->text_offset = read_u32(b->file);
     b->text_length = read_u32(b->file);
     b->chapter_count = read_u16(b->file);
     b->image_count = read_u16(b->file);
+    b->word_count = 0;
+    b->cover_w = 0;
+    b->cover_h = 0;
+    b->cover_offset = 0;
+    b->cover_data_len = 0;
+    b->cover_format = 0;
+    b->image_format = 0;
+    b->flags = 0;
 
+    if(b->chapter_count > FBOOK_MAX_CHAPTERS) {
+        /* Don't silently drop: skip the trailing entries by seeking past them
+         * after we've read what we can keep. */
+        uint16_t over = b->chapter_count - FBOOK_MAX_CHAPTERS;
+        b->chapter_count = FBOOK_MAX_CHAPTERS;
+        for(uint16_t i = 0; i < FBOOK_MAX_CHAPTERS; ++i) {
+            b->chapters[i].offset = read_u32(b->file);
+            b->chapters[i].word_count = 0;
+            uint8_t tmp[FBOOK_CHAPTER_TITLE_V1];
+            if(storage_file_read(b->file, tmp, FBOOK_CHAPTER_TITLE_V1) != FBOOK_CHAPTER_TITLE_V1) return false;
+            memset(b->chapters[i].title, 0, sizeof(b->chapters[i].title));
+            memcpy(b->chapters[i].title, tmp, FBOOK_CHAPTER_TITLE_V1 - 1);
+        }
+        if(!storage_file_seek(
+               b->file, (uint32_t)over * FBOOK_V1_CHAPTER_SIZE, false)) {
+            return false;
+        }
+    } else {
+        for(uint16_t i = 0; i < b->chapter_count; ++i) {
+            b->chapters[i].offset = read_u32(b->file);
+            b->chapters[i].word_count = 0;
+            uint8_t tmp[FBOOK_CHAPTER_TITLE_V1];
+            if(storage_file_read(b->file, tmp, FBOOK_CHAPTER_TITLE_V1) != FBOOK_CHAPTER_TITLE_V1) return false;
+            memset(b->chapters[i].title, 0, sizeof(b->chapters[i].title));
+            memcpy(b->chapters[i].title, tmp, FBOOK_CHAPTER_TITLE_V1 - 1);
+        }
+    }
+
+    if(b->image_count > FBOOK_MAX_IMAGES) {
+        uint16_t over = b->image_count - FBOOK_MAX_IMAGES;
+        b->image_count = FBOOK_MAX_IMAGES;
+        for(uint16_t i = 0; i < FBOOK_MAX_IMAGES; ++i) {
+            b->images[i].offset_in_text = read_u32(b->file);
+            b->images[i].w = read_u16(b->file);
+            b->images[i].h = read_u16(b->file);
+            b->images[i].data_offset = read_u32(b->file);
+            b->images[i].data_len =
+                ((uint32_t)b->images[i].w * b->images[i].h + 7) / 8;
+            b->images[i].format = 0;
+        }
+        if(!storage_file_seek(
+               b->file, (uint32_t)over * FBOOK_V1_IMAGE_SIZE, false)) {
+            return false;
+        }
+    } else {
+        for(uint16_t i = 0; i < b->image_count; ++i) {
+            b->images[i].offset_in_text = read_u32(b->file);
+            b->images[i].w = read_u16(b->file);
+            b->images[i].h = read_u16(b->file);
+            b->images[i].data_offset = read_u32(b->file);
+            b->images[i].data_len =
+                ((uint32_t)b->images[i].w * b->images[i].h + 7) / 8;
+            b->images[i].format = 0;
+        }
+    }
+    b->version = 1;
+    return true;
+}
+
+static bool parse_header_v2(FBook* b) {
+    /* Magic + version already consumed. We're at file offset 8. */
+    b->flags = read_u16(b->file);
+    if(storage_file_read(b->file, b->title, FBOOK_MAX_TITLE) != FBOOK_MAX_TITLE) return false;
+    if(storage_file_read(b->file, b->author, FBOOK_MAX_AUTHOR) != FBOOK_MAX_AUTHOR) return false;
+    if(storage_file_read(b->file, b->language, FBOOK_MAX_LANG) != FBOOK_MAX_LANG) return false;
+    b->title[FBOOK_MAX_TITLE - 1] = '\0';
+    b->author[FBOOK_MAX_AUTHOR - 1] = '\0';
+    b->language[FBOOK_MAX_LANG - 1] = '\0';
+
+    b->text_offset = read_u32(b->file);
+    b->text_length = read_u32(b->file);
+    b->word_count = read_u32(b->file);
+    b->chapter_count = read_u16(b->file);
+    b->image_count = read_u16(b->file);
+    b->cover_offset = read_u32(b->file);
+    b->cover_w = read_u16(b->file);
+    b->cover_h = read_u16(b->file);
+    b->cover_data_len = read_u32(b->file);
+    b->cover_format = read_u8(b->file);
+    b->image_format = read_u8(b->file);
+
+    /* Skip reserved bytes to reach the chapter table (header is fixed-size). */
+    uint32_t consumed_after_magic =
+        2 /*flags*/ + FBOOK_MAX_TITLE + FBOOK_MAX_AUTHOR + FBOOK_MAX_LANG +
+        4 + 4 + 4 + 2 + 2 + 4 + 2 + 2 + 4 + 1 + 1;
+    uint32_t header_consumed = FBOOK_MAGIC_LEN + 2 + consumed_after_magic;
+    if(header_consumed < FBOOK_V2_HEADER_SIZE) {
+        if(!storage_file_seek(b->file, FBOOK_V2_HEADER_SIZE - header_consumed, false)) return false;
+    }
+
+    uint16_t saved_chapter_count = b->chapter_count;
     if(b->chapter_count > FBOOK_MAX_CHAPTERS) b->chapter_count = FBOOK_MAX_CHAPTERS;
-    if(b->image_count > FBOOK_MAX_IMAGES) b->image_count = FBOOK_MAX_IMAGES;
-
     for(uint16_t i = 0; i < b->chapter_count; ++i) {
         b->chapters[i].offset = read_u32(b->file);
-        if(storage_file_read(b->file, b->chapters[i].title, 32) != 32) return false;
-        b->chapters[i].title[31] = '\0';
+        b->chapters[i].word_count = read_u32(b->file);
+        if(storage_file_read(b->file, b->chapters[i].title, FBOOK_CHAPTER_TITLE_V2) !=
+           FBOOK_CHAPTER_TITLE_V2)
+            return false;
+        b->chapters[i].title[FBOOK_CHAPTER_TITLE_V2 - 1] = '\0';
     }
+    if(saved_chapter_count > b->chapter_count) {
+        uint16_t over = saved_chapter_count - b->chapter_count;
+        if(!storage_file_seek(
+               b->file, (uint32_t)over * FBOOK_V2_CHAPTER_SIZE, false))
+            return false;
+    }
+
+    uint16_t saved_image_count = b->image_count;
+    if(b->image_count > FBOOK_MAX_IMAGES) b->image_count = FBOOK_MAX_IMAGES;
     for(uint16_t i = 0; i < b->image_count; ++i) {
         b->images[i].offset_in_text = read_u32(b->file);
         b->images[i].w = read_u16(b->file);
         b->images[i].h = read_u16(b->file);
         b->images[i].data_offset = read_u32(b->file);
-        b->images[i].data_len = 0;
+        b->images[i].data_len = read_u32(b->file);
+        b->images[i].format = read_u8(b->file);
+        uint8_t r[3];
+        storage_file_read(b->file, r, 3);
+        (void)r;
     }
-    /* image data_len field comes from a trailing pass to keep layout simple:
-       we store data packed after the last image entry and use data_offset to
-       point absolutely into the file; data_len is implicit = w*h/8 rounded up. */
-    for(uint16_t i = 0; i < b->image_count; ++i) {
-        b->images[i].data_len = ((uint32_t)b->images[i].w * b->images[i].h + 7) / 8;
+    if(saved_image_count > b->image_count) {
+        uint16_t over = saved_image_count - b->image_count;
+        if(!storage_file_seek(
+               b->file, (uint32_t)over * FBOOK_V2_IMAGE_SIZE, false))
+            return false;
     }
+    b->version = 2;
     return true;
+}
+
+static bool parse_header(FBook* b) {
+    char magic[FBOOK_MAGIC_LEN];
+    if(storage_file_read(b->file, magic, FBOOK_MAGIC_LEN) != FBOOK_MAGIC_LEN) return false;
+
+    if(memcmp(magic, FBOOK2_MAGIC, FBOOK_MAGIC_LEN) == 0) {
+        uint16_t version = read_u16(b->file);
+        if(version != 2) return false;
+        return parse_header_v2(b);
+    }
+    if(memcmp(magic, FBOOK_MAGIC, FBOOK_MAGIC_LEN) == 0) {
+        uint16_t version = read_u16(b->file);
+        if(version != 1) return false;
+        return parse_header_v1(b);
+    }
+    return false;
 }
 
 bool fbook_open(FBook* b, const char* path) {
@@ -125,9 +264,6 @@ bool fbook_open(FBook* b, const char* path) {
         fbook_close(b);
         return false;
     }
-    /* Reject obviously empty bodies up front rather than letting the reader
-     * paint a blank page. This catches .fbook files written by older buggy
-     * converters that produced a valid header but no text. */
     if(b->text_length == 0) {
         fbook_close(b);
         return false;
@@ -144,9 +280,10 @@ uint32_t fbook_read(FBook* b, uint32_t offset, char* out, uint32_t max_bytes) {
     return storage_file_read(b->file, out, max_bytes);
 }
 
-uint8_t* fbook_load_image(FBook* b, uint16_t index, uint16_t* w, uint16_t* h) {
+uint8_t* fbook_load_image(FBook* b, uint16_t index, uint16_t* w, uint16_t* h, uint8_t* format) {
     if(index >= b->image_count) return NULL;
     FBookImage* img = &b->images[index];
+    if(img->data_len == 0 || img->data_len > 4096) return NULL;
     uint8_t* buf = malloc(img->data_len);
     if(!buf) return NULL;
     if(!storage_file_seek(b->file, img->data_offset, true)) {
@@ -159,6 +296,26 @@ uint8_t* fbook_load_image(FBook* b, uint16_t index, uint16_t* w, uint16_t* h) {
     }
     *w = img->w;
     *h = img->h;
+    if(format) *format = img->format;
+    return buf;
+}
+
+uint8_t* fbook_load_cover(FBook* b, uint16_t* w, uint16_t* h, uint8_t* format) {
+    if(b->version < 2 || b->cover_data_len == 0 || b->cover_offset == 0) return NULL;
+    if(b->cover_data_len > 8192) return NULL; // sanity
+    uint8_t* buf = malloc(b->cover_data_len);
+    if(!buf) return NULL;
+    if(!storage_file_seek(b->file, b->cover_offset, true)) {
+        free(buf);
+        return NULL;
+    }
+    if(storage_file_read(b->file, buf, b->cover_data_len) != b->cover_data_len) {
+        free(buf);
+        return NULL;
+    }
+    *w = b->cover_w;
+    *h = b->cover_h;
+    if(format) *format = b->cover_format;
     return buf;
 }
 
@@ -228,7 +385,7 @@ static void write_fixed(File* f, const char* s, size_t n) {
     storage_file_write(f, buf, n);
 }
 
-static bool write_fbook_header(
+static bool write_fbook_v1_header(
     File* out,
     const char* title,
     const char* author,
@@ -271,10 +428,9 @@ bool fbook_import_txt(const char* txt_path, char* out_path, size_t out_len) {
     if(storage_file_open(in, txt_path, FSAM_READ, FSOM_OPEN_EXISTING) &&
        storage_file_open(out, dst, FSAM_WRITE, FSOM_CREATE_ALWAYS)) {
         uint32_t total = storage_file_size(in);
-        uint32_t header_size = FBOOK_MAGIC_LEN + 2 + FBOOK_MAX_TITLE + FBOOK_MAX_AUTHOR + 4 + 4 + 2 + 2;
-        /* storage_file_size can leave the read cursor anywhere; anchor it. */
         storage_file_seek(in, 0, true);
-        bool header_ok = write_fbook_header(out, basename_of(txt_path), "Unknown", total, header_size);
+        bool header_ok = write_fbook_v1_header(
+            out, basename_of(txt_path), "Unknown", total, FBOOK_V1_HEADER_SIZE);
 
         uint8_t buf[256];
         uint32_t remaining = total;
@@ -306,10 +462,8 @@ bool fbook_import_txt(const char* txt_path, char* out_path, size_t out_len) {
     return ok;
 }
 
-/* EPUB is a ZIP with UTF-8 XHTML files. Parsing deflate on-device would be
- * heavyweight, so we look for an already-converted .fbook sidecar in the cache
- * and fail gracefully otherwise. The Python tool tools/epub_to_fbook.py is the
- * recommended conversion path (documented in README). */
+/* EPUB on-device conversion remains a future enhancement: we look for a
+ * pre-converted .fbook sidecar and otherwise prompt the user. */
 bool fbook_import_epub(const char* epub_path, char* out_path, size_t out_len) {
     Storage* storage = furi_record_open(RECORD_STORAGE);
     storage_simply_mkdir(storage, BOOKS_CACHE);
@@ -330,14 +484,12 @@ bool fbook_delete(const char* book_path) {
 
     bool primary_ok = storage_simply_remove(storage, book_path);
 
-    /* Remove the cached .fbook derived from this file's basename. */
     char cached[256];
     cache_path_for(book_path, cached, sizeof(cached));
     if(strcmp(cached, book_path) != 0) {
         storage_simply_remove(storage, cached);
     }
 
-    /* Remove the progress sidecar for this book. */
     const char* slash = strrchr(book_path, '/');
     const char* name = slash ? slash + 1 : book_path;
     char prg[256];
@@ -377,4 +529,116 @@ uint16_t fbook_scan_library(char paths[][256], uint16_t max_paths) {
     }
     furi_record_close(RECORD_STORAGE);
     return count;
+}
+
+bool fbook_peek(const char* path,
+                char* title, size_t title_len,
+                char* author, size_t author_len,
+                uint32_t* text_length,
+                uint32_t* word_count) {
+    Storage* storage = furi_record_open(RECORD_STORAGE);
+    File* f = storage_file_alloc(storage);
+    bool ok = false;
+    if(storage_file_open(f, path, FSAM_READ, FSOM_OPEN_EXISTING)) {
+        char magic[FBOOK_MAGIC_LEN];
+        if(storage_file_read(f, magic, FBOOK_MAGIC_LEN) == FBOOK_MAGIC_LEN) {
+            uint16_t ver = read_u16(f);
+            if(memcmp(magic, FBOOK2_MAGIC, FBOOK_MAGIC_LEN) == 0 && ver == 2) {
+                /* v2: skip flags, then read title, author, language, text_offset, text_length, word_count */
+                read_u16(f); // flags
+                char tt[FBOOK_MAX_TITLE];
+                char aa[FBOOK_MAX_AUTHOR];
+                if(storage_file_read(f, tt, FBOOK_MAX_TITLE) == FBOOK_MAX_TITLE &&
+                   storage_file_read(f, aa, FBOOK_MAX_AUTHOR) == FBOOK_MAX_AUTHOR) {
+                    /* Skip language. */
+                    storage_file_seek(f, FBOOK_MAX_LANG, false);
+                    uint32_t to = read_u32(f);
+                    uint32_t tl = read_u32(f);
+                    uint32_t wc = read_u32(f);
+                    (void)to;
+                    if(title) {
+                        strncpy(title, tt, title_len - 1);
+                        title[title_len - 1] = '\0';
+                    }
+                    if(author) {
+                        strncpy(author, aa, author_len - 1);
+                        author[author_len - 1] = '\0';
+                    }
+                    if(text_length) *text_length = tl;
+                    if(word_count) *word_count = wc;
+                    ok = true;
+                }
+            } else if(memcmp(magic, FBOOK_MAGIC, FBOOK_MAGIC_LEN) == 0 && ver == 1) {
+                char tt[FBOOK_MAX_TITLE];
+                char aa[FBOOK_MAX_AUTHOR];
+                if(storage_file_read(f, tt, FBOOK_MAX_TITLE) == FBOOK_MAX_TITLE &&
+                   storage_file_read(f, aa, FBOOK_MAX_AUTHOR) == FBOOK_MAX_AUTHOR) {
+                    uint32_t to = read_u32(f);
+                    uint32_t tl = read_u32(f);
+                    (void)to;
+                    if(title) {
+                        strncpy(title, tt, title_len - 1);
+                        title[title_len - 1] = '\0';
+                    }
+                    if(author) {
+                        strncpy(author, aa, author_len - 1);
+                        author[author_len - 1] = '\0';
+                    }
+                    if(text_length) *text_length = tl;
+                    if(word_count) *word_count = tl / 6; // crude estimate
+                    ok = true;
+                }
+            }
+        }
+        storage_file_close(f);
+    }
+    storage_file_free(f);
+    furi_record_close(RECORD_STORAGE);
+    return ok;
+}
+
+uint8_t* fbook_peek_cover(const char* path, uint16_t* w, uint16_t* h, uint8_t* format) {
+    Storage* storage = furi_record_open(RECORD_STORAGE);
+    File* f = storage_file_alloc(storage);
+    uint8_t* buf = NULL;
+    if(storage_file_open(f, path, FSAM_READ, FSOM_OPEN_EXISTING)) {
+        char magic[FBOOK_MAGIC_LEN];
+        if(storage_file_read(f, magic, FBOOK_MAGIC_LEN) == FBOOK_MAGIC_LEN) {
+            uint16_t ver = read_u16(f);
+            if(memcmp(magic, FBOOK2_MAGIC, FBOOK_MAGIC_LEN) == 0 && ver == 2) {
+                read_u16(f); // flags
+                /* Skip title + author + language */
+                storage_file_seek(f, FBOOK_MAX_TITLE + FBOOK_MAX_AUTHOR + FBOOK_MAX_LANG, false);
+                read_u32(f); // text_offset
+                read_u32(f); // text_length
+                read_u32(f); // word_count
+                read_u16(f); // chapter_count
+                read_u16(f); // image_count
+                uint32_t cover_offset = read_u32(f);
+                uint16_t cw = read_u16(f);
+                uint16_t ch = read_u16(f);
+                uint32_t clen = read_u32(f);
+                uint8_t cfmt = read_u8(f);
+                if(cover_offset && clen && clen <= 8192 && cw && ch) {
+                    if(storage_file_seek(f, cover_offset, true)) {
+                        buf = malloc(clen);
+                        if(buf) {
+                            if(storage_file_read(f, buf, clen) != clen) {
+                                free(buf);
+                                buf = NULL;
+                            } else {
+                                if(w) *w = cw;
+                                if(h) *h = ch;
+                                if(format) *format = cfmt;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        storage_file_close(f);
+    }
+    storage_file_free(f);
+    furi_record_close(RECORD_STORAGE);
+    return buf;
 }

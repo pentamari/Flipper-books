@@ -8,38 +8,63 @@ auto-scroll, and battery-friendly power modes.
 
 ## Features
 
-- EPUB support via a bundled Python converter (runs on phone or computer).
-- `.txt` support directly on device (auto-imported to the internal format).
-- Library browser that scans the SD card for supported books.
-- Reader with word-wrap, real pagination, and resume-from-last-page.
-- **Text size** scaling with proper layout (Tiny / Small / Medium / Large).
-- **Toggleable images** (auto-dithered to 1bpp and scaled to fit the screen).
-- **Page animations**: None / Slide / Fade / Curl (rendered only in Graphics mode).
-- **Three power modes**:
-  - **Power Saver** - backlight off, no animations, no images, CPU-light rendering.
-  - **Balanced** - auto backlight, lightweight animations.
-  - **Graphics** - backlight enforced on, full animations and images.
-- **Bookmarks** (up to 8 per book, named, with percentage progress).
-- **Table of Contents** navigation to any chapter.
-- **Full-text search** (case-insensitive) with "search next" from the reader.
-- **Night mode** (inverted display).
-- **Auto-scroll** mode with adjustable speed (1-10 seconds per page).
-- **Progress bar** toggle at the bottom of each page.
-- **Reading statistics**: total time read, pages read, books opened/finished.
-- **Justify / hyphenation** toggles for the text layout.
-- **Vibrate on page turn** toggle.
-- Per-book progress is saved automatically on every page turn and on exit.
+### Format
+- **fbook2 format** with cover thumbnail, per-chapter word counts, language
+  metadata, longer chapter titles (48 chars), images up to 128x64, and
+  separate per-image format byte for future grayscale support. The reader
+  accepts both v1 and v2; the converter emits v2 by default (`--v1` for
+  legacy).
+- EPUB support via the Python converter.
+- `.txt` support directly on device.
+
+### Library
+- **Cover thumbnails** in a custom library view with **inline progress bars**
+  next to each title.
+- **Sort modes**: Name / Recent / Progress / Favorites first.
+- **Favorite toggle** per book, displayed as a star next to the cover.
+- **Mark Finished** (manual or auto when reaching the end).
+
+### Reader
+- Word-wrap pagination, resume-from-last-page.
+- **Text size** (Tiny / Small / Medium / Large).
+- **Line spacing** (Tight / Normal / Loose / Double).
+- **Font family** (Auto / Serif / Sans).
+- **Margin** (None / Normal / Wide).
+- **Page number / percentage overlay** (top-right).
+- **Working slide & fade animations** that show both old and new page during
+  the transition.
+- **Night mode** (true black background with white text).
+- **Toggleable images** (1bpp, LSB-first XBM order so they render correctly).
+- **Chapter prev/next** on long-press Left / Right.
+- **Sleep timer** (5/10/15/30/60 min, returns to library on expiry).
+- **Auto-scroll** with adjustable speed.
+- **Bookmarks** (up to 8 per book).
+- **Table of Contents** with chapter word counts.
+- **Full-text search** with "search next".
+- **Go to %...** picker (0-100%).
+- Justify / hyphenation toggles.
+- Vibrate on page turn.
+
+### Stats
+- **Reading speed** (words/minute) computed from accumulated reading time.
+- **Estimated time remaining** for the current book based on WPM and the
+  unread word count.
+- Total time read, pages read, books opened, books finished.
+
+Per-book progress is saved automatically on every page turn and on exit.
 
 ## Controls (in reader)
 
-| Key        | Action                                |
-| ---------- | ------------------------------------- |
-| `Left`     | Previous page                         |
-| `Right`    | Next page                             |
-| `Up`       | Add bookmark at current position      |
-| `Down`     | Open table of contents                |
-| `OK`       | Open in-book menu (bookmarks/search)  |
-| `Back`     | Save progress and return to library   |
+| Key             | Action                                |
+| --------------- | ------------------------------------- |
+| `Left`          | Previous page                         |
+| `Right`         | Next page                             |
+| `Long Left`     | Previous chapter                      |
+| `Long Right`    | Next chapter                          |
+| `Up`            | Add bookmark at current position      |
+| `Down`          | Open table of contents                |
+| `OK`            | Open in-book menu (bookmarks/search)  |
+| `Back`          | Save progress and return to library   |
 
 ## Loading books
 

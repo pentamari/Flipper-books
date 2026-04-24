@@ -17,6 +17,7 @@ typedef enum {
     BooksSceneAbout,
     BooksSceneImport,
     BooksSceneConfirmDelete,
+    BooksSceneGotoPercent,
     BooksSceneCount,
 } BooksScene;
 
@@ -41,5 +42,6 @@ typedef enum {
     BooksEventConfirmDelete,
     BooksEventDoDelete,
     BooksEventCancelDelete,
+    BooksEventJumpPercent,
     BooksEventExit,
 } BooksCustomEvent;

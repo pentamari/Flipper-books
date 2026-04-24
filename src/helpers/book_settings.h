@@ -23,6 +23,32 @@ typedef enum {
     TextSizeLarge = 3,
 } TextSize;
 
+typedef enum {
+    FontFamilyDefault = 0, // FontPrimary for medium/large, FontSecondary for small/tiny
+    FontFamilySerif = 1,   // FontPrimary always
+    FontFamilySans = 2,    // FontSecondary always
+} FontFamily;
+
+typedef enum {
+    LineSpacingTight = 0,  // -1px from default
+    LineSpacingNormal = 1, // default
+    LineSpacingLoose = 2,  // +1px
+    LineSpacingDouble = 3, // +3px
+} LineSpacing;
+
+typedef enum {
+    MarginCompact = 0, // 0px side margin
+    MarginNormal = 1,  // 1px side margin
+    MarginWide = 2,    // 4px side margin
+} MarginSize;
+
+typedef enum {
+    SortModeName = 0,        // alphabetical
+    SortModeRecent = 1,      // most recently read first
+    SortModeProgress = 2,    // least progress first (in-progress books)
+    SortModeFavoritesFirst = 3,
+} LibrarySort;
+
 typedef struct {
     PowerMode power_mode;
     PageAnimation page_animation;
@@ -36,6 +62,16 @@ typedef struct {
     bool hyphenate;
     bool show_progress_bar;
     bool vibrate_page_turn;
+
+    // Added in v2:
+    LineSpacing line_spacing;
+    FontFamily font_family;
+    MarginSize margin;
+    bool show_page_number;       // overlay "p X / Y" on the bottom-right
+    bool show_clock;             // small clock in the corner
+    uint8_t sleep_timer_minutes; // 0 = off; 5/10/15/30/60
+    LibrarySort library_sort;
+    bool show_covers_in_library;
 } BookSettings;
 
 typedef struct {
@@ -43,6 +79,7 @@ typedef struct {
     uint32_t total_pages_read;
     uint32_t books_opened;
     uint32_t books_finished;
+    uint32_t total_words_read;       // added in v2
 } BookStats;
 
 void book_settings_set_defaults(BookSettings* s);
@@ -57,3 +94,7 @@ const char* power_mode_name(PowerMode m);
 const char* page_anim_name(PageAnimation a);
 const char* text_size_name(TextSize t);
 uint8_t text_size_pixels(TextSize t);
+const char* font_family_name(FontFamily f);
+const char* line_spacing_name(LineSpacing l);
+const char* margin_name(MarginSize m);
+const char* library_sort_name(LibrarySort s);

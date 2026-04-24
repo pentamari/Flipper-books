@@ -1,10 +1,14 @@
 #include "../books_app.h"
+#include <stdio.h>
 
 enum {
     ItemResume,
     ItemBookmarks,
     ItemToc,
     ItemSearch,
+    ItemGotoPercent,
+    ItemFavorite,
+    ItemMarkFinished,
     ItemSettings,
     ItemCloseBook,
 };
@@ -23,6 +27,18 @@ void books_scene_menu_on_enter(void* ctx) {
     submenu_add_item(m, "Bookmarks", ItemBookmarks, submenu_cb, app);
     submenu_add_item(m, "Contents", ItemToc, submenu_cb, app);
     submenu_add_item(m, "Search", ItemSearch, submenu_cb, app);
+    submenu_add_item(m, "Go to %...", ItemGotoPercent, submenu_cb, app);
+
+    /* Favourite toggle reflects current state in the label so users know what
+     * pressing it will do. */
+    char fav_label[24];
+    snprintf(fav_label, sizeof(fav_label),
+             app->progress.favorite ? "Unfavorite" : "Favorite");
+    submenu_add_item(m, fav_label, ItemFavorite, submenu_cb, app);
+
+    if(!app->progress.finished) {
+        submenu_add_item(m, "Mark Finished", ItemMarkFinished, submenu_cb, app);
+    }
     submenu_add_item(m, "Settings", ItemSettings, submenu_cb, app);
     submenu_add_item(m, "Close Book", ItemCloseBook, submenu_cb, app);
     view_dispatcher_switch_to_view(app->view_dispatcher, BooksViewSubmenu);
@@ -43,6 +59,20 @@ bool books_scene_menu_on_event(void* ctx, SceneManagerEvent event) {
         return true;
     case ItemSearch:
         scene_manager_next_scene(app->scene_manager, BooksSceneSearchInput);
+        return true;
+    case ItemGotoPercent:
+        scene_manager_next_scene(app->scene_manager, BooksSceneGotoPercent);
+        return true;
+    case ItemFavorite:
+        app->progress.favorite = app->progress.favorite ? 0 : 1;
+        book_progress_save(app->current_book_path, &app->progress);
+        scene_manager_previous_scene(app->scene_manager);
+        return true;
+    case ItemMarkFinished:
+        app->progress.finished = 1;
+        app->stats.books_finished++;
+        book_progress_save(app->current_book_path, &app->progress);
+        scene_manager_previous_scene(app->scene_manager);
         return true;
     case ItemSettings:
         scene_manager_next_scene(app->scene_manager, BooksSceneSettings);
