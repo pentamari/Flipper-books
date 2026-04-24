@@ -5,7 +5,7 @@ static char stats_text[160];
 
 static void stats_dialog_cb(DialogExResult result, void* ctx) {
     BooksApp* app = ctx;
-    if(result == DialogExResultLeft || result == DialogExResultBack) {
+    if(result == DialogExResultLeft) {
         view_dispatcher_send_custom_event(app->view_dispatcher, BooksEventBackToLibrary);
     }
 }
