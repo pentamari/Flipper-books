@@ -138,6 +138,9 @@ static void compute_page_end(ReaderModel* m) {
             if(reserve + 2 < avail_h) reserve += 2;
         }
     }
+    /* Page-number overlay sits in the top-right; reserve the first 8px so
+     * it doesn't overlap the first line of text. */
+    if(m->settings->show_page_number && reserve < 8) reserve = 8;
     uint8_t text_h = avail_h > reserve ? avail_h - reserve : lh;
     uint8_t max_lines = (uint8_t)(text_h / lh);
     if(max_lines < 1) max_lines = 1;
@@ -292,6 +295,9 @@ static void draw_text_buffer(
 static void draw_text_page(Canvas* c, ReaderModel* m, int16_t x_offset) {
     uint8_t reserve = image_top_reserve(m);
     if(reserve > 0 && reserve + 2 < READER_H) reserve += 2;
+    /* Push text below the page-number overlay when it's on. Mirrors the
+     * reserve logic in compute_page_end so line counts stay consistent. */
+    if(m->settings->show_page_number && reserve < 8) reserve = 8;
     uint16_t text_len = (uint16_t)(m->page_end_offset - m->page_offset);
     draw_text_buffer(c, m, m->cache, text_len, x_offset, reserve);
 }

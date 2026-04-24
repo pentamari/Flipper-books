@@ -240,6 +240,30 @@ void library_view_reset(LibraryView* v, const char* header, bool delete_mode) {
         true);
 }
 
+/* Downsample a source 1bpp cover into a tightly-packed 1bpp thumbnail of at
+ * most COVER_CACHE_PX*COVER_CACHE_PX bytes. Returns NULL on failure or an
+ * allocation the caller is expected to free on the next reset. Using a small
+ * cached copy instead of keeping the converter's 64x64 in RAM saves ~11 KB
+ * across a full library. */
+#define COVER_CACHE_PX 16
+static uint8_t* downsample_cover(const uint8_t* src, uint16_t sw, uint16_t sh) {
+    if(!src || sw == 0 || sh == 0) return NULL;
+    uint16_t src_rb = (uint16_t)((sw + 7u) >> 3);
+    uint16_t dst_rb = (uint16_t)((COVER_CACHE_PX + 7u) >> 3);
+    uint8_t* out = malloc((size_t)dst_rb * COVER_CACHE_PX);
+    if(!out) return NULL;
+    memset(out, 0, (size_t)dst_rb * COVER_CACHE_PX);
+    for(uint16_t y = 0; y < COVER_CACHE_PX; ++y) {
+        uint16_t sy = (uint16_t)((uint32_t)y * sh / COVER_CACHE_PX);
+        for(uint16_t x = 0; x < COVER_CACHE_PX; ++x) {
+            uint16_t sx = (uint16_t)((uint32_t)x * sw / COVER_CACHE_PX);
+            uint8_t bit = (src[(uint32_t)sy * src_rb + (sx >> 3)] >> (sx & 7u)) & 1u;
+            if(bit) out[(uint32_t)y * dst_rb + (x >> 3)] |= (uint8_t)(1u << (x & 7u));
+        }
+    }
+    return out;
+}
+
 void library_view_add_entry(
     LibraryView* v,
     const char* path,
@@ -250,6 +274,20 @@ void library_view_add_entry(
     uint8_t* cover_data,
     uint16_t cover_w,
     uint16_t cover_h) {
+    /* Compress the cover into a 16x16 thumbnail before storing; the caller
+     * owns the original until this function returns. */
+    uint8_t* cached = NULL;
+    uint16_t cached_w = 0;
+    uint16_t cached_h = 0;
+    if(cover_data && cover_w > 0 && cover_h > 0) {
+        cached = downsample_cover(cover_data, cover_w, cover_h);
+        if(cached) {
+            cached_w = COVER_CACHE_PX;
+            cached_h = COVER_CACHE_PX;
+        }
+    }
+    if(cover_data) free(cover_data);
+
     bool stored = false;
     with_view_model(
         v->view, LibraryModel * m, {
@@ -260,14 +298,14 @@ void library_view_add_entry(
                 e->progress_pct = progress_pct;
                 e->last_read = last_read;
                 e->favorite = favorite;
-                e->cover_data = cover_data;
-                e->cover_w = cover_w;
-                e->cover_h = cover_h;
+                e->cover_data = cached;
+                e->cover_w = cached_w;
+                e->cover_h = cached_h;
                 stored = true;
             }
         },
         true);
-    if(!stored && cover_data) free(cover_data);
+    if(!stored && cached) free(cached);
 }
 
 /* Hand-rolled insertion sort. The Flipper firmware does not expose qsort
