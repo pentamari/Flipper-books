@@ -1,0 +1,146 @@
+#include "book_settings.h"
+#include "../books_app.h"
+#include <storage/storage.h>
+#include <furi.h>
+#include <string.h>
+
+#define SETTINGS_MAGIC 0x424F4B31u /* 'BOK1' */
+#define STATS_MAGIC    0x53544154u /* 'STAT' */
+
+void book_settings_set_defaults(BookSettings* s) {
+    s->power_mode = PowerModeBalanced;
+    s->page_animation = PageAnimSlide;
+    s->text_size = TextSizeSmall;
+    s->show_images = true;
+    s->night_mode = false;
+    s->auto_scroll = false;
+    s->auto_scroll_speed = 6;
+    s->backlight_level = 60;
+    s->justify_text = false;
+    s->hyphenate = true;
+    s->show_progress_bar = true;
+    s->vibrate_page_turn = false;
+}
+
+static bool write_all(Storage* storage, const char* path, const void* data, size_t len) {
+    File* f = storage_file_alloc(storage);
+    bool ok = false;
+    if(storage_file_open(f, path, FSAM_WRITE, FSOM_CREATE_ALWAYS)) {
+        ok = storage_file_write(f, data, len) == len;
+        storage_file_close(f);
+    }
+    storage_file_free(f);
+    return ok;
+}
+
+static bool read_all(Storage* storage, const char* path, void* data, size_t len) {
+    File* f = storage_file_alloc(storage);
+    bool ok = false;
+    if(storage_file_open(f, path, FSAM_READ, FSOM_OPEN_EXISTING)) {
+        ok = storage_file_read(f, data, len) == len;
+        storage_file_close(f);
+    }
+    storage_file_free(f);
+    return ok;
+}
+
+typedef struct {
+    uint32_t magic;
+    uint32_t version;
+    BookSettings data;
+} SettingsBlob;
+
+bool book_settings_load(BookSettings* s) {
+    Storage* storage = furi_record_open(RECORD_STORAGE);
+    SettingsBlob b;
+    bool ok = read_all(storage, BOOKS_SETTINGS_FILE, &b, sizeof(b));
+    if(ok && b.magic == SETTINGS_MAGIC) {
+        *s = b.data;
+    } else {
+        book_settings_set_defaults(s);
+        ok = false;
+    }
+    furi_record_close(RECORD_STORAGE);
+    return ok;
+}
+
+bool book_settings_save(const BookSettings* s) {
+    Storage* storage = furi_record_open(RECORD_STORAGE);
+    storage_simply_mkdir(storage, BOOKS_APP_FOLDER);
+    SettingsBlob b = {.magic = SETTINGS_MAGIC, .version = 1, .data = *s};
+    bool ok = write_all(storage, BOOKS_SETTINGS_FILE, &b, sizeof(b));
+    furi_record_close(RECORD_STORAGE);
+    return ok;
+}
+
+typedef struct {
+    uint32_t magic;
+    uint32_t version;
+    BookStats data;
+} StatsBlob;
+
+void book_stats_set_defaults(BookStats* s) {
+    memset(s, 0, sizeof(*s));
+}
+
+bool book_stats_load(BookStats* s) {
+    Storage* storage = furi_record_open(RECORD_STORAGE);
+    StatsBlob b;
+    bool ok = read_all(storage, BOOKS_STATS_FILE, &b, sizeof(b));
+    if(ok && b.magic == STATS_MAGIC) {
+        *s = b.data;
+    } else {
+        book_stats_set_defaults(s);
+        ok = false;
+    }
+    furi_record_close(RECORD_STORAGE);
+    return ok;
+}
+
+bool book_stats_save(const BookStats* s) {
+    Storage* storage = furi_record_open(RECORD_STORAGE);
+    storage_simply_mkdir(storage, BOOKS_APP_FOLDER);
+    StatsBlob b = {.magic = STATS_MAGIC, .version = 1, .data = *s};
+    bool ok = write_all(storage, BOOKS_STATS_FILE, &b, sizeof(b));
+    furi_record_close(RECORD_STORAGE);
+    return ok;
+}
+
+const char* power_mode_name(PowerMode m) {
+    switch(m) {
+    case PowerModePowerSaver: return "Saver";
+    case PowerModeBalanced:   return "Balanced";
+    case PowerModeGraphics:   return "Graphics";
+    }
+    return "?";
+}
+
+const char* page_anim_name(PageAnimation a) {
+    switch(a) {
+    case PageAnimNone:  return "None";
+    case PageAnimSlide: return "Slide";
+    case PageAnimFade:  return "Fade";
+    case PageAnimCurl:  return "Curl";
+    }
+    return "?";
+}
+
+const char* text_size_name(TextSize t) {
+    switch(t) {
+    case TextSizeTiny:   return "Tiny";
+    case TextSizeSmall:  return "Small";
+    case TextSizeMedium: return "Medium";
+    case TextSizeLarge:  return "Large";
+    }
+    return "?";
+}
+
+uint8_t text_size_pixels(TextSize t) {
+    switch(t) {
+    case TextSizeTiny:   return 5;
+    case TextSizeSmall:  return 7;
+    case TextSizeMedium: return 9;
+    case TextSizeLarge:  return 12;
+    }
+    return 7;
+}

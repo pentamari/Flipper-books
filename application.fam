@@ -1,0 +1,23 @@
+App(
+    appid="flipper_books",
+    name="Books",
+    apptype=FlipperAppType.EXTERNAL,
+    entry_point="flipper_books_app",
+    requires=[
+        "gui",
+        "storage",
+        "dialogs",
+        "notification",
+    ],
+    stack_size=4 * 1024,
+    fap_category="Tools",
+    fap_description="EPUB book reader with bookmarks, TOC, search, night mode, auto-scroll and power saving.",
+    fap_author="minerofthesoal",
+    fap_version="1.0",
+    sources=[
+        "src/*.c",
+        "src/scenes/*.c",
+        "src/views/*.c",
+        "src/helpers/*.c",
+    ],
+)

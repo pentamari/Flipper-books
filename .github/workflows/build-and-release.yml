@@ -1,0 +1,85 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [main, master, "claude/**"]
+    tags: ["v*"]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Optional tag to publish a release for (e.g. v1.0.0)."
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build FAP (Momentum)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Pillow for EPUB converter tests
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install Pillow
+
+      - name: Install ufbt
+        run: |
+          python -m pip install --upgrade ufbt
+
+      - name: Fetch Momentum SDK
+        run: |
+          ufbt update --index-url=https://up.momentum-fw.dev/firmware/directory.json --channel=release
+
+      - name: Build FAP
+        run: ufbt
+
+      - name: Stage artifacts
+        run: |
+          mkdir -p stage
+          find dist -maxdepth 3 -type f -name "*.fap" -exec cp {} stage/ \;
+          cp tools/epub_to_fbook.py stage/
+          cp README.md stage/ 2>/dev/null || true
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: flipper-books-${{ github.sha }}
+          path: stage/
+          if-no-files-found: error
+
+      - name: Determine release tag
+        id: tag
+        shell: bash
+        run: |
+          if [ "${GITHUB_REF#refs/tags/}" != "$GITHUB_REF" ]; then
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+            echo "do_release=true" >> "$GITHUB_OUTPUT"
+          elif [ -n "${{ inputs.release_tag }}" ]; then
+            echo "tag=${{ inputs.release_tag }}" >> "$GITHUB_OUTPUT"
+            echo "do_release=true"  >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            echo "do_release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release
+        if: steps.tag.outputs.do_release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Books ${{ steps.tag.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            stage/*.fap
+            stage/epub_to_fbook.py
