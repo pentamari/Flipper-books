@@ -41,8 +41,8 @@ COVER_MAX_HEIGHT = 64
 # If a book exceeds these, the on-device reader silently drops the excess, so we
 # truncate here too - otherwise the file pointer desyncs and the reader can
 # render garbage or nothing at all.
-MAX_CHAPTERS = 256
-MAX_IMAGES = 96
+MAX_CHAPTERS = 128
+MAX_IMAGES = 64
 V2_HEADER_SIZE = 224
 V2_CHAPTER_SIZE = 4 + 4 + CHAPTER_TITLE_V2  # 56
 V2_IMAGE_SIZE = 4 + 2 + 2 + 4 + 4 + 1 + 3   # 20

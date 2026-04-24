@@ -99,6 +99,15 @@ static uint8_t max_chars_per_line(TextSize t) {
     return 26;
 }
 
+/* Per-book hard ceiling on inline image height. v1 files were produced with
+ * a 48-px-tall converter budget and a reader that capped at 32 (half the
+ * screen); v2 files carry images up to 64 px tall and deserve more screen
+ * real estate, so we give them 48 px - most of the page while still leaving
+ * room for a couple lines of text below. */
+static uint8_t inline_image_max_h(const FBook* b) {
+    return (b && b->version >= 2) ? 48u : 32u;
+}
+
 /* Height in pixels reserved at the top of the page for an inline image on the
  * current page, matching what draw_image_on_page will actually render. */
 static uint8_t image_top_reserve(const ReaderModel* m) {
@@ -111,7 +120,8 @@ static uint8_t image_top_reserve(const ReaderModel* m) {
     if(off < m->page_offset) return 0;
     if(off >= m->page_end_offset) return 0;
     uint16_t h = m->book->images[idx].h;
-    if(h > 32) h = 32;
+    uint8_t cap = inline_image_max_h(m->book);
+    if(h > cap) h = cap;
     return (uint8_t)h;
 }
 
@@ -138,6 +148,9 @@ static void compute_page_end(ReaderModel* m) {
             if(reserve + 2 < avail_h) reserve += 2;
         }
     }
+    /* Page-number overlay sits in the top-right; reserve the first 8px so
+     * it doesn't overlap the first line of text. */
+    if(m->settings->show_page_number && reserve < 8) reserve = 8;
     uint8_t text_h = avail_h > reserve ? avail_h - reserve : lh;
     uint8_t max_lines = (uint8_t)(text_h / lh);
     if(max_lines < 1) max_lines = 1;
@@ -292,6 +305,9 @@ static void draw_text_buffer(
 static void draw_text_page(Canvas* c, ReaderModel* m, int16_t x_offset) {
     uint8_t reserve = image_top_reserve(m);
     if(reserve > 0 && reserve + 2 < READER_H) reserve += 2;
+    /* Push text below the page-number overlay when it's on. Mirrors the
+     * reserve logic in compute_page_end so line counts stay consistent. */
+    if(m->settings->show_page_number && reserve < 8) reserve = 8;
     uint16_t text_len = (uint16_t)(m->page_end_offset - m->page_offset);
     draw_text_buffer(c, m, m->cache, text_len, x_offset, reserve);
 }
@@ -346,7 +362,8 @@ static void draw_image_on_page(Canvas* c, ReaderModel* m) {
     (void)fmt; /* 2bpp rendering is added below; for now treat all as XBM. */
 
     uint16_t draw_w = w > READER_W ? READER_W : w;
-    uint16_t draw_h = h > 32 ? 32 : h;
+    uint8_t h_cap = inline_image_max_h(m->book);
+    uint16_t draw_h = h > h_cap ? h_cap : h;
     int16_t x = (READER_W - draw_w) / 2;
     int16_t y = 0;
     canvas_draw_xbm(c, x, y, draw_w, draw_h, data);
