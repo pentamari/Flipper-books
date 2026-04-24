@@ -3,18 +3,14 @@
 
 #define LIBRARY_MAX 64
 
-typedef struct {
-    char paths[LIBRARY_MAX][256];
-    uint16_t count;
-} LibraryState;
+/* Static so we don't blow the app stack on rescan. */
+static char scan_paths[LIBRARY_MAX][256];
 
-static LibraryState library_state;
-
-static void submenu_cb(void* ctx, uint32_t index) {
+static void on_select(uint16_t index, void* ctx) {
     BooksApp* app = ctx;
-    if(index >= library_state.count) return;
-
-    const char* path = library_state.paths[index];
+    (void)index;
+    const char* path = library_view_selected_path(app->library);
+    if(!path) return;
     const char* slash = strrchr(path, '/');
     const char* name = slash ? slash + 1 : path;
 
@@ -35,21 +31,48 @@ static void submenu_cb(void* ctx, uint32_t index) {
 
 void books_scene_library_on_enter(void* ctx) {
     BooksApp* app = ctx;
-    Submenu* m = app->submenu;
-    submenu_reset(m);
-    submenu_set_header(m, app->library_delete_mode ? "Delete which?" : "Library");
+    library_view_reset(app->library,
+                       app->library_delete_mode ? "Delete which?" : "Library",
+                       app->library_delete_mode);
+    library_view_set_select_callback(app->library, on_select, app);
 
-    library_state.count = fbook_scan_library(library_state.paths, LIBRARY_MAX);
-    if(library_state.count == 0) {
-        submenu_add_item(m, "(no books found)", 0xFFFF, NULL, app);
-    } else {
-        for(uint16_t i = 0; i < library_state.count; ++i) {
-            const char* slash = strrchr(library_state.paths[i], '/');
-            const char* name = slash ? slash + 1 : library_state.paths[i];
-            submenu_add_item(m, name, i, submenu_cb, app);
+    uint16_t count = fbook_scan_library(scan_paths, LIBRARY_MAX);
+    for(uint16_t i = 0; i < count; ++i) {
+        const char* path = scan_paths[i];
+        char title[64] = {0};
+        char author[48] = {0};
+        uint32_t text_length = 0;
+        uint32_t word_count = 0;
+        if(!fbook_peek(path, title, sizeof(title), author, sizeof(author),
+                       &text_length, &word_count)) {
+            /* Couldn't read header - fall back to filename so the user can
+             * still see (and delete) it. */
+            const char* slash = strrchr(path, '/');
+            const char* name = slash ? slash + 1 : path;
+            strncpy(title, name, sizeof(title) - 1);
+            title[sizeof(title) - 1] = '\0';
+            text_length = 0;
         }
+
+        uint32_t off = 0, total = text_length, last_read = 0;
+        uint8_t fav = 0;
+        book_progress_load_summary(path, &off, &total, &last_read, &fav);
+        uint8_t pct = 0;
+        if(total > 0) {
+            uint32_t p = off * 100u / total;
+            pct = p > 100 ? 100 : (uint8_t)p;
+        }
+
+        uint16_t cw = 0, ch = 0;
+        uint8_t fmt = 0;
+        uint8_t* cov = fbook_peek_cover(path, &cw, &ch, &fmt);
+
+        library_view_add_entry(app->library, path, title, pct, last_read,
+                               fav != 0, cov, cw, ch);
     }
-    view_dispatcher_switch_to_view(app->view_dispatcher, BooksViewSubmenu);
+
+    library_view_apply_sort(app->library, app->settings.library_sort);
+    view_dispatcher_switch_to_view(app->view_dispatcher, BooksViewLibrary);
 }
 
 bool books_scene_library_on_event(void* ctx, SceneManagerEvent event) {
@@ -69,5 +92,5 @@ bool books_scene_library_on_event(void* ctx, SceneManagerEvent event) {
 
 void books_scene_library_on_exit(void* ctx) {
     BooksApp* app = ctx;
-    submenu_reset(app->submenu);
+    library_view_reset(app->library, "Library", false);
 }
