@@ -28,7 +28,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install Pillow for EPUB converter tests
+      - name: Install Pillow for EPUB converter
         run: |
           python -m pip install --upgrade pip
           python -m pip install Pillow
@@ -50,6 +50,7 @@ jobs:
           find dist -maxdepth 3 -type f -name "*.fap" -exec cp {} stage/ \;
           cp tools/epub_to_fbook.py stage/
           cp README.md stage/ 2>/dev/null || true
+          ls -la stage/
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -58,28 +59,43 @@ jobs:
           path: stage/
           if-no-files-found: error
 
-      - name: Determine release tag
-        id: tag
+      - name: Determine release parameters
+        id: rel
         shell: bash
         run: |
           if [ "${GITHUB_REF#refs/tags/}" != "$GITHUB_REF" ]; then
-            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
-            echo "do_release=true" >> "$GITHUB_OUTPUT"
+            tag="${GITHUB_REF#refs/tags/}"
+            name="Books $tag"
+            prerelease=false
           elif [ -n "${{ inputs.release_tag }}" ]; then
-            echo "tag=${{ inputs.release_tag }}" >> "$GITHUB_OUTPUT"
-            echo "do_release=true"  >> "$GITHUB_OUTPUT"
+            tag="${{ inputs.release_tag }}"
+            name="Books $tag"
+            prerelease=false
           else
-            echo "tag=" >> "$GITHUB_OUTPUT"
-            echo "do_release=false" >> "$GITHUB_OUTPUT"
+            tag="latest"
+            name="Books latest build (#${{ github.run_number }})"
+            prerelease=true
           fi
+          echo "tag=$tag"                >> "$GITHUB_OUTPUT"
+          echo "name=$name"              >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease"  >> "$GITHUB_OUTPUT"
 
-      - name: Create GitHub Release
-        if: steps.tag.outputs.do_release == 'true'
+      - name: Move rolling tag (latest only)
+        if: steps.rel.outputs.tag == 'latest' && github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          git tag -f latest
+          git push -f origin latest
+
+      - name: Create / update GitHub Release
+        if: github.event_name != 'pull_request'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.tag.outputs.tag }}
-          name: Books ${{ steps.tag.outputs.tag }}
+          tag_name: ${{ steps.rel.outputs.tag }}
+          name: ${{ steps.rel.outputs.name }}
+          prerelease: ${{ steps.rel.outputs.prerelease }}
           generate_release_notes: true
+          fail_on_unmatched_files: true
           files: |
             stage/*.fap
             stage/epub_to_fbook.py
