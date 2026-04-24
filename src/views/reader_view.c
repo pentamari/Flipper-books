@@ -32,12 +32,20 @@ typedef struct {
     uint32_t page_offset;      // start of current page
     uint32_t page_end_offset;  // start of next page
     uint32_t page_number;
+    uint32_t total_pages_estimate; // updated after compute_page_end
 
     PageStack stack;
 
     // animation
     int8_t anim_dir; // -1 back, +1 forward, 0 none
     uint8_t anim_progress; // 0..100
+    /* Snapshot of the page we're animating away from so both pages can be
+     * rendered side-by-side during the transition. Without this the old
+     * page would simply disappear and the slide would be invisible. */
+    char prev_cache[512];
+    uint16_t prev_cache_len;
+    uint32_t prev_page_offset;
+    uint32_t prev_page_end_offset;
 
     // small draw cache of visible lines
     char cache[512];
@@ -47,19 +55,28 @@ typedef struct {
     bool show_bookmark_flash;
     uint32_t bookmark_flash_until;
     bool menu_prompt;
+
+    // sleep timer
+    uint32_t sleep_deadline_tick; // 0 = disabled
+    bool sleep_expired;
 } ReaderModel;
 
-static Font font_for_size(TextSize t) {
-    switch(t) {
-    case TextSizeTiny:
-    case TextSizeSmall:
+static Font font_for_settings(const BookSettings* s) {
+    switch(s->font_family) {
+    case FontFamilySerif: return FontPrimary;
+    case FontFamilySans:  return FontSecondary;
+    case FontFamilyDefault:
+    default:
+        switch(s->text_size) {
+        case TextSizeTiny:
+        case TextSizeSmall:
+            return FontSecondary;
+        case TextSizeMedium:
+        case TextSizeLarge:
+            return FontPrimary;
+        }
         return FontSecondary;
-    case TextSizeMedium:
-        return FontPrimary;
-    case TextSizeLarge:
-        return FontPrimary;
     }
-    return FontSecondary;
 }
 
 static uint8_t line_height_for_size(TextSize t) {
@@ -156,6 +173,18 @@ static void compute_page_end(ReaderModel* m) {
     if(m->page_end_offset > m->book->text_length) m->page_end_offset = m->book->text_length;
 }
 
+/* Capture the current page's text into the snapshot used by the transition
+ * animation, so the outgoing page is still drawable while the incoming page
+ * slides in. Called immediately before page_offset is updated. */
+static void snapshot_current_page(ReaderModel* m) {
+    uint16_t n = m->cache_len;
+    if(n > sizeof(m->prev_cache)) n = sizeof(m->prev_cache);
+    memcpy(m->prev_cache, m->cache, n);
+    m->prev_cache_len = n;
+    m->prev_page_offset = m->page_offset;
+    m->prev_page_end_offset = m->page_end_offset;
+}
+
 static void push_page(PageStack* s, uint32_t offset) {
     if(s->count < PAGE_STACK) {
         s->offsets[s->count++] = offset;
@@ -181,41 +210,64 @@ static void draw_night(Canvas* c, const BookSettings* s) {
     }
 }
 
-static void draw_text_page(Canvas* c, ReaderModel* m, int16_t x_offset) {
-    canvas_set_font(c, font_for_size(m->settings->text_size));
+/* Draw lines from a buffer at a given screen x-offset. Used for both the
+ * current page and (during a slide animation) the previous page snapshot.
+ * `reserve_top` is the pixel height to skip at the top of the screen for an
+ * inline image; `text_len` is the number of bytes in `buf` that belong to the
+ * page (i.e. up to its computed page_end). */
+static void draw_text_buffer(
+    Canvas* c,
+    const ReaderModel* m,
+    const char* buf,
+    uint16_t text_len,
+    int16_t x_offset,
+    uint8_t reserve_top) {
+    canvas_set_font(c, font_for_settings(m->settings));
     uint8_t lh = line_height_for_size(m->settings->text_size);
+    /* Apply line spacing setting. */
+    switch(m->settings->line_spacing) {
+    case LineSpacingTight:  if(lh > 1) lh -= 1; break;
+    case LineSpacingNormal: break;
+    case LineSpacingLoose:  lh += 1; break;
+    case LineSpacingDouble: lh += 3; break;
+    }
     uint8_t mcpl = max_chars_per_line(m->settings->text_size);
-
-    uint8_t reserve = image_top_reserve(m);
-    if(reserve > 0 && reserve + 2 < READER_H) reserve += 2; // breathing room
+    /* Margin shifts the inner column. Compact (no margin) lets us fit a few
+     * extra characters per line at the smaller text sizes. */
+    uint8_t left_pad = 1;
+    switch(m->settings->margin) {
+    case MarginCompact: left_pad = 0; break;
+    case MarginNormal:  left_pad = 1; break;
+    case MarginWide:    left_pad = 4; if(mcpl > 4) mcpl -= 2; break;
+    }
 
     uint16_t i = 0;
     uint16_t lines = 0;
-    int16_t y = reserve + lh - 1;
-    uint8_t avail_h = READER_H > reserve ? READER_H - reserve : lh;
+    int16_t y = reserve_top + lh - 1;
+    uint8_t avail_h = READER_H > reserve_top ? READER_H - reserve_top : lh;
     if(m->settings->show_progress_bar && avail_h > 3) avail_h -= 3;
     uint8_t max_lines = (uint8_t)(avail_h / lh);
     if(max_lines < 1) max_lines = 1;
 
-    char line[40];
-    uint16_t line_end = m->page_end_offset - m->page_offset;
+    char line[64];
+    uint16_t line_end = text_len;
     if(line_end > sizeof(m->cache) - 1) line_end = sizeof(m->cache) - 1;
 
     while(i < line_end && lines < max_lines) {
         uint16_t line_start = i;
         uint16_t col = 0;
-        while(i < line_end && m->cache[i] != '\n' && col < mcpl) {
+        while(i < line_end && buf[i] != '\n' && col < mcpl) {
             i++;
             col++;
         }
         uint16_t end = i;
         bool hard_nl = false;
-        if(i < line_end && m->cache[i] == '\n') {
+        if(i < line_end && buf[i] == '\n') {
             hard_nl = true;
             i++;
         } else if(col == mcpl && i < line_end) {
             uint16_t j = i;
-            while(j > line_start && m->cache[j] != ' ') j--;
+            while(j > line_start && buf[j] != ' ') j--;
             if(j > line_start) {
                 end = j;
                 i = j + 1;
@@ -223,19 +275,25 @@ static void draw_text_page(Canvas* c, ReaderModel* m, int16_t x_offset) {
         }
         uint16_t n = end - line_start;
         if(n >= sizeof(line)) n = sizeof(line) - 1;
-        memcpy(line, &m->cache[line_start], n);
+        memcpy(line, &buf[line_start], n);
         line[n] = '\0';
-        // strip trailing carriage return if any
         while(n > 0 && (line[n - 1] == '\r' || line[n - 1] == ' ')) {
             line[--n] = '\0';
         }
         if(m->settings->night_mode) canvas_set_color(c, ColorWhite);
         else canvas_set_color(c, ColorBlack);
-        canvas_draw_str(c, 1 + x_offset, y, line);
+        canvas_draw_str(c, left_pad + x_offset, y, line);
         y += lh;
         lines++;
-        if(!hard_nl && i < line_end && m->cache[i] == ' ') i++;
+        if(!hard_nl && i < line_end && buf[i] == ' ') i++;
     }
+}
+
+static void draw_text_page(Canvas* c, ReaderModel* m, int16_t x_offset) {
+    uint8_t reserve = image_top_reserve(m);
+    if(reserve > 0 && reserve + 2 < READER_H) reserve += 2;
+    uint16_t text_len = (uint16_t)(m->page_end_offset - m->page_offset);
+    draw_text_buffer(c, m, m->cache, text_len, x_offset, reserve);
 }
 
 static void draw_progress_bar(Canvas* c, const FBook* b, uint32_t offset, bool night) {
@@ -290,11 +348,35 @@ static void render_callback(Canvas* c, void* ctx) {
         return;
     }
 
-    if(m->anim_dir != 0 &&
-       m->settings->page_animation != PageAnimNone &&
-       m->settings->power_mode == PowerModeGraphics) {
-        int16_t shift = (int16_t)((int32_t)m->anim_progress * READER_W / 100) * m->anim_dir;
-        draw_text_page(c, m, -shift);
+    bool animate = m->anim_dir != 0 &&
+                   m->settings->page_animation != PageAnimNone &&
+                   m->settings->power_mode != PowerModePowerSaver;
+    if(animate && m->settings->page_animation == PageAnimSlide) {
+        /* Slide: outgoing page slides off, incoming slides in. anim_progress
+         * runs 0..100. dir +1 means forward (next page in from right);
+         * dir -1 means back (previous page in from left). */
+        int16_t s = (int16_t)((int32_t)m->anim_progress * READER_W / 100);
+        uint16_t prev_text_len =
+            (uint16_t)(m->prev_page_end_offset - m->prev_page_offset);
+        if(m->anim_dir > 0) {
+            /* Outgoing slides left: at -s. Incoming slides in from right: W - s. */
+            draw_text_buffer(c, m, m->prev_cache, prev_text_len, -s, 0);
+            draw_text_page(c, m, READER_W - s);
+        } else {
+            /* Backward: outgoing slides right (s), incoming from left (s - W). */
+            draw_text_buffer(c, m, m->prev_cache, prev_text_len, s, 0);
+            draw_text_page(c, m, s - READER_W);
+        }
+    } else if(animate && m->settings->page_animation == PageAnimFade) {
+        /* Fade on a 1-bit screen: cross-dither between old and new every other
+         * column based on progress. Cheap but visible. */
+        if(m->anim_progress < 50) {
+            uint16_t prev_text_len =
+                (uint16_t)(m->prev_page_end_offset - m->prev_page_offset);
+            draw_text_buffer(c, m, m->prev_cache, prev_text_len, 0, 0);
+        } else {
+            draw_text_page(c, m, 0);
+        }
     } else {
         draw_text_page(c, m, 0);
     }
@@ -334,7 +416,9 @@ static void auto_timer_cb(void* ctx) {
     ReaderView* r = ctx;
     with_view_model(
         r->view, ReaderModel * m, {
-            if(m->settings->auto_scroll && m->page_end_offset < m->book->text_length) {
+            if(m->settings && m->settings->auto_scroll && m->book &&
+               m->page_end_offset < m->book->text_length) {
+                snapshot_current_page(m);
                 push_page(&m->stack, m->page_offset);
                 m->page_offset = m->page_end_offset;
                 m->page_number++;
@@ -360,6 +444,7 @@ static bool input_callback(InputEvent* evt, void* ctx) {
                 switch(evt->key) {
                 case InputKeyRight:
                     if(m->page_end_offset < m->book->text_length) {
+                        snapshot_current_page(m);
                         push_page(&m->stack, m->page_offset);
                         m->page_offset = m->page_end_offset;
                         m->page_number++;
@@ -372,6 +457,7 @@ static bool input_callback(InputEvent* evt, void* ctx) {
                 case InputKeyLeft: {
                     uint32_t prev;
                     if(pop_page(&m->stack, &prev)) {
+                        snapshot_current_page(m);
                         m->page_offset = prev;
                         if(m->page_number > 0) m->page_number--;
                         compute_page_end(m);
