@@ -82,27 +82,48 @@ static uint8_t max_chars_per_line(TextSize t) {
     return 26;
 }
 
+/* Height in pixels reserved at the top of the page for an inline image on the
+ * current page, matching what draw_image_on_page will actually render. */
+static uint8_t image_top_reserve(const ReaderModel* m) {
+    if(!m->settings->show_images) return 0;
+    if(m->settings->power_mode == PowerModePowerSaver) return 0;
+    if(!m->book || m->book->image_count == 0) return 0;
+    uint16_t idx = fbook_next_image(m->book, m->page_offset);
+    if(idx == UINT16_MAX) return 0;
+    uint32_t off = m->book->images[idx].offset_in_text;
+    if(off < m->page_offset) return 0;
+    if(off >= m->page_end_offset) return 0;
+    uint16_t h = m->book->images[idx].h;
+    if(h > 32) h = 32;
+    return (uint8_t)h;
+}
+
 /* Compute page end offset by word-wrapping in the cache. */
 static void compute_page_end(ReaderModel* m) {
     m->cache_len = fbook_read(m->book, m->page_offset, m->cache, sizeof(m->cache) - 1);
     m->cache[m->cache_len] = '\0';
 
     uint8_t lh = line_height_for_size(m->settings->text_size);
-    uint8_t max_lines = (uint8_t)(READER_H / lh);
-    if(m->settings->show_progress_bar) max_lines = (uint8_t)((READER_H - 3) / lh);
-    if(max_lines < 1) max_lines = 1;
+    uint8_t avail_h = READER_H;
+    if(m->settings->show_progress_bar && avail_h > 3) avail_h -= 3;
 
-    // Apply image reserve: if an image lives in this page, reduce lines.
+    /* Reserve room for an inline image on this page, using cache_len as the
+     * upper bound for what this page can cover. We also subtract 2px of gap
+     * between the image and the first line of text so descenders don't touch. */
+    uint8_t reserve = 0;
     if(m->settings->show_images && m->settings->power_mode != PowerModePowerSaver) {
         uint16_t img_idx = fbook_next_image(m->book, m->page_offset);
         if(img_idx != UINT16_MAX &&
            m->book->images[img_idx].offset_in_text < m->page_offset + m->cache_len) {
             uint16_t h = m->book->images[img_idx].h;
-            uint8_t image_lines = (uint8_t)((h + lh - 1) / lh);
-            if(image_lines >= max_lines) image_lines = max_lines - 1;
-            if(max_lines > image_lines) max_lines -= image_lines;
+            if(h > 32) h = 32;
+            reserve = (uint8_t)h;
+            if(reserve + 2 < avail_h) reserve += 2;
         }
     }
+    uint8_t text_h = avail_h > reserve ? avail_h - reserve : lh;
+    uint8_t max_lines = (uint8_t)(text_h / lh);
+    if(max_lines < 1) max_lines = 1;
 
     uint8_t mcpl = max_chars_per_line(m->settings->text_size);
 
@@ -163,11 +184,16 @@ static void draw_text_page(Canvas* c, ReaderModel* m, int16_t x_offset) {
     uint8_t lh = line_height_for_size(m->settings->text_size);
     uint8_t mcpl = max_chars_per_line(m->settings->text_size);
 
+    uint8_t reserve = image_top_reserve(m);
+    if(reserve > 0 && reserve + 2 < READER_H) reserve += 2; // breathing room
+
     uint16_t i = 0;
     uint16_t lines = 0;
-    int16_t y = lh - 1;
-    uint8_t max_lines = (uint8_t)(READER_H / lh);
-    if(m->settings->show_progress_bar) max_lines = (uint8_t)((READER_H - 3) / lh);
+    int16_t y = reserve + lh - 1;
+    uint8_t avail_h = READER_H > reserve ? READER_H - reserve : lh;
+    if(m->settings->show_progress_bar && avail_h > 3) avail_h -= 3;
+    uint8_t max_lines = (uint8_t)(avail_h / lh);
+    if(max_lines < 1) max_lines = 1;
 
     char line[40];
     uint16_t line_end = m->page_end_offset - m->page_offset;
@@ -227,6 +253,15 @@ static void draw_image_on_page(Canvas* c, ReaderModel* m) {
     uint16_t idx = fbook_next_image(m->book, m->page_offset);
     if(idx == UINT16_MAX) return;
     if(m->book->images[idx].offset_in_text >= m->page_end_offset) return;
+    if(m->book->images[idx].offset_in_text < m->page_offset) return;
+
+    /* Guard against corrupt dimensions before we ask the loader to malloc and
+     * read (w*h)/8 bytes for us. A full-page image at this resolution is at
+     * most READER_W * 32 / 8 = 512 bytes. */
+    uint16_t stored_w = m->book->images[idx].w;
+    uint16_t stored_h = m->book->images[idx].h;
+    if(stored_w == 0 || stored_h == 0) return;
+    if(stored_w > READER_W || stored_h > READER_H) return;
 
     uint16_t w, h;
     uint8_t* data = fbook_load_image(m->book, idx, &w, &h);

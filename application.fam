@@ -9,7 +9,7 @@ App(
         "dialogs",
         "notification",
     ],
-    stack_size=4 * 1024,
+    stack_size=8 * 1024,
     fap_category="Tools",
     fap_description="EPUB book reader with bookmarks, TOC, search, night mode, auto-scroll and power saving.",
     fap_author="minerofthesoal",

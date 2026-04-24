@@ -32,6 +32,12 @@ AUTHOR_LEN = 48
 CHAPTER_TITLE_LEN = 32
 IMAGE_MAX_WIDTH = 120
 IMAGE_MAX_HEIGHT = 48
+# Must match FBOOK_MAX_CHAPTERS / FBOOK_MAX_IMAGES in src/helpers/book_storage.h.
+# If a book exceeds these, the on-device reader silently drops the excess, so we
+# truncate here too - otherwise the file pointer desyncs and the reader can
+# render garbage or nothing at all.
+MAX_CHAPTERS = 128
+MAX_IMAGES = 64
 
 NS = {
     "opf": "http://www.idpf.org/2007/opf",
@@ -125,20 +131,17 @@ def _dither_to_1bpp(im) -> Tuple[int, int, bytes]:
         h = max(1, int(h * scale))
         im = im.resize((w, h))
     mono = im.convert("1")
-    pixels = mono.tobytes()
-    # PIL packs 1bpp MSB-first already; but rows are padded to full bytes per row.
-    # We repack tightly: row-major, MSB-first.
+    # Flipper's canvas_draw_xbm expects XBM byte order: LSB-first within each
+    # byte (bit 0 = leftmost pixel). PIL packs 1bpp MSB-first, so we pack
+    # pixel-by-pixel in LSB-first order. Black in PIL 1bpp is 0; in XBM a set
+    # bit means "pixel drawn" (black on the e-ink-ish LCD).
     row_bytes = (w + 7) // 8
-    padded_row = (w + 7) // 8  # PIL uses same - but row padding differs on some builds.
-    if len(pixels) == row_bytes * h:
-        return w, h, pixels
-    # Fallback: repack pixel by pixel.
     out = bytearray(row_bytes * h)
     px = mono.load()
     for y in range(h):
         for x in range(w):
-            if px[x, y] == 0:  # 0 = black in PIL 1bpp
-                out[y * row_bytes + (x >> 3)] |= 0x80 >> (x & 7)
+            if px[x, y] == 0:  # black
+                out[y * row_bytes + (x >> 3)] |= 1 << (x & 7)
     return w, h, bytes(out)
 
 
@@ -238,6 +241,8 @@ def convert(
                 if full in image_cache:
                     idx = image_cache[full]
                 else:
+                    if len(images) >= MAX_IMAGES:
+                        return None
                     try:
                         data = zf.read(full)
                     except KeyError:
@@ -258,7 +263,8 @@ def convert(
             text = parser.get_text()
 
             chapter_start = len(text_buf)
-            chapters.append(ChapterOut(offset=chapter_start, title=chap_title))
+            if len(chapters) < MAX_CHAPTERS:
+                chapters.append(ChapterOut(offset=chapter_start, title=chap_title))
 
             pos = 0
             for m in placeholder_re.finditer(text):
