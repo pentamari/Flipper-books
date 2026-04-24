@@ -242,10 +242,15 @@ void library_view_reset(LibraryView* v, const char* header, bool delete_mode) {
 
 /* Downsample a source 1bpp cover into a tightly-packed 1bpp thumbnail of at
  * most COVER_CACHE_PX*COVER_CACHE_PX bytes. Returns NULL on failure or an
- * allocation the caller is expected to free on the next reset. Using a small
- * cached copy instead of keeping the converter's 64x64 in RAM saves ~11 KB
- * across a full library. */
-#define COVER_CACHE_PX 16
+ * allocation the caller is expected to free on the next reset.
+ *
+ * Cache size 32 keeps the full v2 cover detail (the converter writes 64x64,
+ * so this is one halving) while still costing only 128 bytes/entry - across
+ * a 24-book library that's ~3 KB, vs the 12 KB the raw 64x64 covers cost.
+ * The display itself is still a 14 px square, but a 32x32 cache gives the
+ * runtime nearest-neighbour scaler enough information to avoid the splotchy
+ * look 16x16 produced. */
+#define COVER_CACHE_PX 32
 static uint8_t* downsample_cover(const uint8_t* src, uint16_t sw, uint16_t sh) {
     if(!src || sw == 0 || sh == 0) return NULL;
     uint16_t src_rb = (uint16_t)((sw + 7u) >> 3);

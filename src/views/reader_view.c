@@ -99,13 +99,27 @@ static uint8_t max_chars_per_line(TextSize t) {
     return 26;
 }
 
-/* Per-book hard ceiling on inline image height. v1 files were produced with
- * a 48-px-tall converter budget and a reader that capped at 32 (half the
- * screen); v2 files carry images up to 64 px tall and deserve more screen
- * real estate, so we give them 48 px - most of the page while still leaving
- * room for a couple lines of text below. */
+/* Per-book hard ceiling on inline image height. v1 keeps the original 32-px
+ * cap; v2 uses the full screen so the larger images the format allows aren't
+ * clipped. When a v2 image would consume essentially the whole page, the
+ * reader enters "plate" mode: the text budget for the page drops to zero and
+ * the image is centred full-screen, so the next Right-press advances past it. */
 static uint8_t inline_image_max_h(const FBook* b) {
-    return (b && b->version >= 2) ? 48u : 32u;
+    return (b && b->version >= 2) ? (uint8_t)READER_H : 32u;
+}
+
+/* True when a full-screen image lives at the current page offset, meaning
+ * the page should be rendered as the image alone. */
+static bool is_plate_page(const ReaderModel* m) {
+    if(!m->book || m->book->version < 2) return false;
+    if(!m->settings->show_images) return false;
+    if(m->settings->power_mode == PowerModePowerSaver) return false;
+    if(m->book->image_count == 0) return false;
+    uint16_t idx = fbook_next_image(m->book, m->page_offset);
+    if(idx == UINT16_MAX) return false;
+    uint32_t off = m->book->images[idx].offset_in_text;
+    if(off != m->page_offset) return false; /* must start exactly at page top */
+    return m->book->images[idx].h >= (READER_H - 8);
 }
 
 /* Height in pixels reserved at the top of the page for an inline image on the
@@ -130,6 +144,17 @@ static void compute_page_end(ReaderModel* m) {
     m->cache_len = fbook_read(m->book, m->page_offset, m->cache, sizeof(m->cache) - 1);
     m->cache[m->cache_len] = '\0';
 
+    /* Plate page: a v2 image that fills the screen takes the page on its
+     * own; advance past the single byte the converter inserts at the image
+     * marker so the next page resumes with text. */
+    if(is_plate_page(m)) {
+        m->page_end_offset = m->page_offset + 1;
+        if(m->page_end_offset > m->book->text_length) {
+            m->page_end_offset = m->book->text_length;
+        }
+        return;
+    }
+
     uint8_t lh = line_height_for_size(m->settings->text_size);
     uint8_t avail_h = READER_H;
     if(m->settings->show_progress_bar && avail_h > 3) avail_h -= 3;
@@ -143,7 +168,8 @@ static void compute_page_end(ReaderModel* m) {
         if(img_idx != UINT16_MAX &&
            m->book->images[img_idx].offset_in_text < m->page_offset + m->cache_len) {
             uint16_t h = m->book->images[img_idx].h;
-            if(h > 32) h = 32;
+            uint8_t cap = inline_image_max_h(m->book);
+            if(h > cap) h = cap;
             reserve = (uint8_t)h;
             if(reserve + 2 < avail_h) reserve += 2;
         }
@@ -365,7 +391,9 @@ static void draw_image_on_page(Canvas* c, ReaderModel* m) {
     uint8_t h_cap = inline_image_max_h(m->book);
     uint16_t draw_h = h > h_cap ? h_cap : h;
     int16_t x = (READER_W - draw_w) / 2;
-    int16_t y = 0;
+    /* Plate pages: vertically centre the image so a portrait cover doesn't
+     * sit awkwardly at the top of the screen. */
+    int16_t y = is_plate_page(m) ? (int16_t)((READER_H - draw_h) / 2) : 0;
     canvas_draw_xbm(c, x, y, draw_w, draw_h, data);
     free(data);
 }
