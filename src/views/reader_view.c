@@ -307,6 +307,22 @@ static void draw_progress_bar(Canvas* c, const FBook* b, uint32_t offset, bool n
     canvas_draw_box(c, 1, READER_H - 2, w, 2);
 }
 
+/* Draws "p N  P%" in the top-right; used when show_page_number is enabled.
+ * Kept tiny so it doesn't eat into the visible text area. */
+static void draw_page_number(Canvas* c, const ReaderModel* m) {
+    if(!m->book || m->book->text_length == 0) return;
+    char buf[24];
+    uint32_t pct = (m->page_offset * 100) / m->book->text_length;
+    if(pct > 100) pct = 100;
+    snprintf(buf, sizeof(buf), "p%lu  %lu%%",
+             (unsigned long)(m->page_number + 1),
+             (unsigned long)pct);
+    canvas_set_font(c, FontSecondary);
+    if(m->settings->night_mode) canvas_set_color(c, ColorWhite);
+    else canvas_set_color(c, ColorBlack);
+    canvas_draw_str_aligned(c, READER_W - 1, 1, AlignRight, AlignTop, buf);
+}
+
 static void draw_image_on_page(Canvas* c, ReaderModel* m) {
     if(!m->settings->show_images) return;
     if(m->settings->power_mode == PowerModePowerSaver) return;
@@ -386,6 +402,9 @@ static void render_callback(Canvas* c, void* ctx) {
     if(m->settings->show_progress_bar) {
         draw_progress_bar(c, m->book, m->page_offset, m->settings->night_mode);
     }
+    if(m->settings->show_page_number) {
+        draw_page_number(c, m);
+    }
 
     if(m->show_bookmark_flash && furi_get_tick() < m->bookmark_flash_until) {
         canvas_set_color(c, m->settings->night_mode ? ColorWhite : ColorBlack);
@@ -397,6 +416,7 @@ static void render_callback(Canvas* c, void* ctx) {
 
 static void anim_timer_cb(void* ctx) {
     ReaderView* r = ctx;
+    bool fire_sleep = false;
     with_view_model(
         r->view, ReaderModel * m, {
             if(m->anim_dir != 0) {
@@ -408,8 +428,16 @@ static void anim_timer_cb(void* ctx) {
                     if(m->anim_progress > 100) m->anim_progress = 100;
                 }
             }
+            if(m->sleep_deadline_tick && !m->sleep_expired &&
+               furi_get_tick() >= m->sleep_deadline_tick) {
+                m->sleep_expired = true;
+                fire_sleep = true;
+            }
         },
         true);
+    if(fire_sleep && r->event_cb) {
+        r->event_cb(ReaderEventBack, r->event_ctx);
+    }
 }
 
 static void auto_timer_cb(void* ctx) {
@@ -434,9 +462,53 @@ static void emit_event(ReaderView* r, ReaderPublicEvent ev) {
     if(r->event_cb) r->event_cb(ev, r->event_ctx);
 }
 
+/* Long-press helpers: jump to the previous/next chapter boundary. Bound to
+ * long-press Left / long-press Right in input_callback. */
+static void jump_to_chapter_offset(ReaderModel* m, uint32_t offset) {
+    snapshot_current_page(m);
+    push_page(&m->stack, m->page_offset);
+    m->page_offset = offset;
+    if(m->page_offset > m->book->text_length) m->page_offset = m->book->text_length;
+    compute_page_end(m);
+    m->anim_dir = 0;
+    m->anim_progress = 0;
+}
+
+static void jump_prev_chapter(ReaderModel* m) {
+    if(!m->book || m->book->chapter_count == 0) return;
+    uint16_t cur = fbook_find_chapter(m->book, m->page_offset);
+    /* If we're past a chapter's start, jump to the start of this one. */
+    if(m->book->chapters[cur].offset < m->page_offset) {
+        jump_to_chapter_offset(m, m->book->chapters[cur].offset);
+        return;
+    }
+    if(cur == 0) return;
+    jump_to_chapter_offset(m, m->book->chapters[cur - 1].offset);
+}
+
+static void jump_next_chapter(ReaderModel* m) {
+    if(!m->book || m->book->chapter_count == 0) return;
+    uint16_t cur = fbook_find_chapter(m->book, m->page_offset);
+    if(cur + 1 >= m->book->chapter_count) return;
+    jump_to_chapter_offset(m, m->book->chapters[cur + 1].offset);
+}
+
 static bool input_callback(InputEvent* evt, void* ctx) {
     ReaderView* r = ctx;
     bool consumed = false;
+
+    if(evt->type == InputTypeLong) {
+        if(evt->key == InputKeyLeft) {
+            with_view_model(
+                r->view, ReaderModel * m, { jump_prev_chapter(m); }, true);
+            return true;
+        }
+        if(evt->key == InputKeyRight) {
+            with_view_model(
+                r->view, ReaderModel * m, { jump_next_chapter(m); }, true);
+            return true;
+        }
+    }
 
     if(evt->type == InputTypeShort) {
         with_view_model(
@@ -553,6 +625,17 @@ void reader_view_set_settings(ReaderView* r, const BookSettings* settings) {
             } else {
                 furi_timer_stop(r->auto_timer);
             }
+            /* (Re)compute the sleep timer deadline whenever settings change.
+             * 0 = disabled. Timer is checked from anim_timer_cb. */
+            if(settings->sleep_timer_minutes == 0) {
+                m->sleep_deadline_tick = 0;
+            } else {
+                uint32_t freq = furi_kernel_get_tick_frequency();
+                m->sleep_deadline_tick =
+                    furi_get_tick() +
+                    (uint32_t)settings->sleep_timer_minutes * 60u * freq;
+            }
+            m->sleep_expired = false;
             if(m->book) compute_page_end(m);
         },
         true);
