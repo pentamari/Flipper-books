@@ -44,18 +44,21 @@ void books_scene_reader_on_enter(void* ctx) {
         popup_reset(app->popup);
         const char* dot = strrchr(app->current_book_path, '.');
         bool is_epub = dot && strcasecmp(dot, BOOKS_EXT_EPUB) == 0;
+        bool is_fbook = dot && strcasecmp(dot, BOOKS_EXT_FBOOK) == 0;
         popup_set_header(app->popup, "Cannot open", 64, 8, AlignCenter, AlignTop);
-        popup_set_text(
-            app->popup,
-            is_epub ? "Run epub_to_fbook.py\nand drop the .fbook in"
-                    : "File is missing or\nnot a valid book",
-            64,
-            28,
-            AlignCenter,
-            AlignTop);
+        const char* msg;
+        if(is_epub) {
+            msg = "Run epub_to_fbook.py\nand drop the .fbook in";
+        } else if(is_fbook) {
+            /* Likely an empty/old .fbook from the buggy converter run. */
+            msg = "Empty .fbook -\nre-run the converter";
+        } else {
+            msg = "File is missing or\nnot a valid book";
+        }
+        popup_set_text(app->popup, msg, 64, 28, AlignCenter, AlignTop);
         popup_set_context(app->popup, app);
         popup_set_callback(app->popup, open_fail_popup_cb);
-        popup_set_timeout(app->popup, 2500);
+        popup_set_timeout(app->popup, 3000);
         popup_enable_timeout(app->popup);
         view_dispatcher_switch_to_view(app->view_dispatcher, BooksViewPopup);
         fbook_free(g_book);

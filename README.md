@@ -65,6 +65,14 @@ Flags:
 - `--no-images` - skip image extraction (smaller files, faster conversion).
 - `-o PATH` - custom output path.
 
+### Regenerating older .fbook files
+
+If you have `.fbook` files made before this version of the converter
+they may be empty (text body length = 0) or have images packed in the
+wrong byte order. Re-run the converter on the original `.epub` and
+delete the stale entries from `/ext/apps_data/books/cache/` so the
+new copies are used.
+
 ## Building
 
 Uses [ufbt](https://github.com/flipperdevices/flipperzero-ufbt) with the
