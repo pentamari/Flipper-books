@@ -22,6 +22,9 @@ struct ReaderView {
     void* event_ctx;
     FuriTimer* anim_timer;
     FuriTimer* auto_timer;
+    /* Optional - reader scene hands this in so input_callback can re-suppress
+     * the backlight after every keypress when PowerSaver is on. */
+    NotificationApp* notifications;
 };
 
 typedef struct {
@@ -683,6 +686,22 @@ static bool input_callback(InputEvent* evt, void* ctx) {
         }
     }
 
+    /* PowerSaver re-suppression: the firmware's input pipeline turns the
+     * backlight back on at every event. Without an _enforce_off message we
+     * have to keep reapplying the one-shot _off after we've handled the key.
+     * Done outside the model lock to avoid blocking the GUI thread on the
+     * notification record. */
+    if(r->notifications) {
+        bool save = false;
+        with_view_model(
+            r->view, ReaderModel * m,
+            { save = m->settings && m->settings->power_mode == PowerModePowerSaver; },
+            false);
+        if(save) {
+            notification_message(r->notifications, &sequence_display_backlight_off);
+        }
+    }
+
     return consumed;
 }
 
@@ -792,4 +811,8 @@ void reader_view_jump_to(ReaderView* r, uint32_t offset) {
 void reader_view_set_event_callback(ReaderView* r, ReaderEventCallback cb, void* ctx) {
     r->event_cb = cb;
     r->event_ctx = ctx;
+}
+
+void reader_view_set_notifications(ReaderView* r, NotificationApp* notifications) {
+    r->notifications = notifications;
 }
