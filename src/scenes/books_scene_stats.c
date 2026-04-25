@@ -28,7 +28,7 @@ void books_scene_stats_on_enter(void* ctx) {
 
     /* Time-remaining in the *current* book, computed from per-book progress.
      * Skipped if the user is not currently in a book. */
-    char eta[40] = "";
+    char eta[24] = "";
     if(app->progress.words_in_book > 0 && app->progress.total_bytes > 0) {
         uint32_t remaining_words =
             app->progress.words_in_book -
@@ -36,28 +36,33 @@ void books_scene_stats_on_enter(void* ctx) {
                        app->progress.offset / app->progress.total_bytes);
         uint32_t eta_min = remaining_words / wpm;
         if(eta_min > 0) {
-            snprintf(eta, sizeof(eta), "\nETA: %luh %lum",
+            snprintf(eta, sizeof(eta), "  ETA %luh%lum",
                      (unsigned long)(eta_min / 60),
                      (unsigned long)(eta_min % 60));
         }
     }
 
+    /* Three lines of body text: top of the dialog body sits at y=14, the
+     * "Back" button at the bottom edge starts around y=53. With FontSecondary
+     * (~9 px), three lines (14, 23, 32) clear the button comfortably; the
+     * old four-line layout pushed the last line into the button area, which
+     * is what produced the "[Back] 5h 27m" overlap in the user's photo. */
     snprintf(
         stats_text,
         sizeof(stats_text),
-        "Time: %luh %lum\nPages: %lu  WPM: %lu\nOpened: %lu  Done: %lu%s",
+        "Time %luh%lum  WPM %lu\nPages %lu  Books %lu/%lu\n%s",
         (unsigned long)hours,
         (unsigned long)(mins % 60),
-        (unsigned long)app->stats.total_pages_read,
         (unsigned long)wpm,
-        (unsigned long)app->stats.books_opened,
+        (unsigned long)app->stats.total_pages_read,
         (unsigned long)app->stats.books_finished,
-        eta);
+        (unsigned long)app->stats.books_opened,
+        eta[0] ? eta + 2 : "");
 
     DialogEx* d = app->dialog;
     dialog_ex_reset(d);
-    dialog_ex_set_header(d, "Reading Stats", 64, 4, AlignCenter, AlignTop);
-    dialog_ex_set_text(d, stats_text, 4, 18, AlignLeft, AlignTop);
+    dialog_ex_set_header(d, "Reading Stats", 64, 2, AlignCenter, AlignTop);
+    dialog_ex_set_text(d, stats_text, 4, 14, AlignLeft, AlignTop);
     dialog_ex_set_left_button_text(d, "Back");
     dialog_ex_set_context(d, app);
     dialog_ex_set_result_callback(d, stats_dialog_cb);
