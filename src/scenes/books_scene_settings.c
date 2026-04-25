@@ -9,7 +9,11 @@ static void power_cb(VariableItem* item) {
     if(app->settings.power_mode == PowerModeGraphics) {
         notification_message(app->notifications, &sequence_display_backlight_enforce_on);
     } else if(app->settings.power_mode == PowerModePowerSaver) {
-        notification_message(app->notifications, &sequence_display_backlight_off);
+        /* Use *enforce*_off, not the one-shot *off*. Without enforcement the
+         * firmware's input handler turns the backlight back on every time
+         * the user presses a key, which defeats the entire point of Power
+         * Saver mode (and is exactly what the user reported). */
+        notification_message(app->notifications, &sequence_display_backlight_enforce_off);
     } else {
         notification_message(app->notifications, &sequence_display_backlight_enforce_auto);
     }
