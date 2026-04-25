@@ -108,10 +108,9 @@ int32_t flipper_books_app(void* p) {
     if(app->settings.power_mode == PowerModeGraphics) {
         notification_message(app->notifications, &sequence_display_backlight_enforce_on);
     } else if(app->settings.power_mode == PowerModePowerSaver) {
-        /* enforce_off keeps the backlight off across input events; the
-         * one-shot _off message would let it come back on at the next key
-         * press. */
-        notification_message(app->notifications, &sequence_display_backlight_enforce_off);
+        /* Momentum has no _enforce_off; reader_view re-issues this on every
+         * key press while in Power Saver so input events can't re-light it. */
+        notification_message(app->notifications, &sequence_display_backlight_off);
     }
 
     view_dispatcher_run(app->view_dispatcher);

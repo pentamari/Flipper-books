@@ -1,6 +1,7 @@
 #pragma once
 
 #include <gui/view.h>
+#include <notification/notification.h>
 #include "../helpers/book_storage.h"
 #include "../helpers/book_settings.h"
 #include "../helpers/book_progress.h"
@@ -33,3 +34,9 @@ uint32_t reader_view_get_page(const ReaderView* r);
 void reader_view_jump_to(ReaderView* r, uint32_t offset);
 
 void reader_view_set_event_callback(ReaderView* r, ReaderEventCallback cb, void* ctx);
+
+/** Hand the reader a NotificationApp pointer so it can re-suppress the
+ *  backlight on every input event when in PowerSaver mode. The Momentum SDK
+ *  doesn't expose a sequence_display_backlight_enforce_off, so we have to
+ *  reapply the one-shot _off message after each key press. May be NULL. */
+void reader_view_set_notifications(ReaderView* r, NotificationApp* notifications);

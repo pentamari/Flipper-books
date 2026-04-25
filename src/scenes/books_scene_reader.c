@@ -73,6 +73,7 @@ void books_scene_reader_on_enter(void* ctx) {
     reader_view_set_book(app->reader, g_book);
     reader_view_set_progress(app->reader, &app->progress);
     reader_view_set_event_callback(app->reader, reader_event_cb, app);
+    reader_view_set_notifications(app->reader, app->notifications);
 
     app->stats.books_opened++;
     view_dispatcher_switch_to_view(app->view_dispatcher, BooksViewReader);

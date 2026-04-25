@@ -9,11 +9,11 @@ static void power_cb(VariableItem* item) {
     if(app->settings.power_mode == PowerModeGraphics) {
         notification_message(app->notifications, &sequence_display_backlight_enforce_on);
     } else if(app->settings.power_mode == PowerModePowerSaver) {
-        /* Use *enforce*_off, not the one-shot *off*. Without enforcement the
-         * firmware's input handler turns the backlight back on every time
-         * the user presses a key, which defeats the entire point of Power
-         * Saver mode (and is exactly what the user reported). */
-        notification_message(app->notifications, &sequence_display_backlight_enforce_off);
+        /* Momentum SDK has no _enforce_off, only the one-shot _off. The
+         * reader_view's input handler reapplies this on every key press
+         * while in Power Saver so the firmware's input handler can't pop
+         * the backlight back on at every page-flip. */
+        notification_message(app->notifications, &sequence_display_backlight_off);
     } else {
         notification_message(app->notifications, &sequence_display_backlight_enforce_auto);
     }
