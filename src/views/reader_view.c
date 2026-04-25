@@ -240,7 +240,7 @@ static bool pop_page(PageStack* s, uint32_t* out) {
 }
 
 static void draw_night(Canvas* c, const BookSettings* s) {
-    if(s->night_mode) {
+    if(s && s->night_mode) {
         /* Fill the background with pixels-on so subsequent ColorWhite
          * (pixels-off) draws show through as light text on a dark page. */
         canvas_set_color(c, ColorBlack);
@@ -401,6 +401,19 @@ static void draw_image_on_page(Canvas* c, ReaderModel* m) {
 static void render_callback(Canvas* c, void* ctx) {
     ReaderModel* m = ctx;
     canvas_clear(c);
+
+    /* Defensive: settings can be NULL during the brief window between view
+     * allocation and the reader scene wiring it up. The original code only
+     * checked m->book and would dereference m->settings unconditionally
+     * later; on rare scheduling paths (notably right after the user changes
+     * power_mode in Settings, which fires a notification that can re-pump
+     * the GUI) this produced a bus error. */
+    if(!m->settings) {
+        canvas_set_font(c, FontPrimary);
+        canvas_draw_str_aligned(c, READER_W / 2, READER_H / 2, AlignCenter, AlignCenter, "...");
+        return;
+    }
+
     draw_night(c, m->settings);
 
     if(!m->book || !m->book->file) {
@@ -412,32 +425,86 @@ static void render_callback(Canvas* c, void* ctx) {
     bool animate = m->anim_dir != 0 &&
                    m->settings->page_animation != PageAnimNone &&
                    m->settings->power_mode != PowerModePowerSaver;
+
+    /* Compute prev_text_len once and clamp it to the cache size before either
+     * animation branch uses it - the subtraction is unsigned and a stale
+     * snapshot can underflow into a giant value that walks off prev_cache. */
+    uint16_t prev_text_len = 0;
+    if(m->prev_page_end_offset >= m->prev_page_offset) {
+        prev_text_len =
+            (uint16_t)(m->prev_page_end_offset - m->prev_page_offset);
+    }
+    if(prev_text_len > sizeof(m->prev_cache)) prev_text_len = sizeof(m->prev_cache);
+
     if(animate && m->settings->page_animation == PageAnimSlide) {
         /* Slide: outgoing page slides off, incoming slides in. anim_progress
          * runs 0..100. dir +1 means forward (next page in from right);
          * dir -1 means back (previous page in from left). */
         int16_t s = (int16_t)((int32_t)m->anim_progress * READER_W / 100);
-        uint16_t prev_text_len =
-            (uint16_t)(m->prev_page_end_offset - m->prev_page_offset);
         if(m->anim_dir > 0) {
-            /* Outgoing slides left: at -s. Incoming slides in from right: W - s. */
             draw_text_buffer(c, m, m->prev_cache, prev_text_len, -s, 0);
             draw_text_page(c, m, READER_W - s);
         } else {
-            /* Backward: outgoing slides right (s), incoming from left (s - W). */
             draw_text_buffer(c, m, m->prev_cache, prev_text_len, s, 0);
             draw_text_page(c, m, s - READER_W);
         }
     } else if(animate && m->settings->page_animation == PageAnimFade) {
-        /* Fade on a 1-bit screen: cross-dither between old and new every other
-         * column based on progress. Cheap but visible. */
-        if(m->anim_progress < 50) {
-            uint16_t prev_text_len =
-                (uint16_t)(m->prev_page_end_offset - m->prev_page_offset);
+        /* Fade on a 1-bit screen: a vertical wipe gives the user a real sense
+         * of progress without trying to fake alpha. Top half of the page is
+         * the new content, bottom half is the old, with the boundary moving
+         * downward as anim_progress runs 0..100. */
+        int16_t boundary = (int16_t)((int32_t)m->anim_progress * READER_H / 100);
+        canvas_set_bitmap_mode(c, false);
+        /* Draw new page first (it will cover everything we plan to keep). */
+        draw_text_page(c, m, 0);
+        /* Then re-draw the bottom strip with the old page. */
+        if(boundary < READER_H) {
+            /* Clip by carving out the top "boundary" rows: for the bottom we
+             * draw the prev page, and the top half from the new page is
+             * already on the canvas above. */
+            canvas_set_color(c, m->settings->night_mode ? ColorBlack : ColorWhite);
+            canvas_draw_box(c, 0, boundary, READER_W, READER_H - boundary);
+            canvas_set_color(c, m->settings->night_mode ? ColorWhite : ColorBlack);
+            /* Draw prev_cache shifted down by `boundary`-many lines: simplest
+             * faithful approximation is to render it from y=0 and rely on the
+             * fact that the box above covered the new page below the
+             * boundary, so the prev page fills the bottom strip. */
             draw_text_buffer(c, m, m->prev_cache, prev_text_len, 0, 0);
-        } else {
-            draw_text_page(c, m, 0);
         }
+    } else if(animate && m->settings->page_animation == PageAnimCurl) {
+        /* Curl: diagonal wipe from the bottom-right (forward) or top-left
+         * (back) corner, simulating a page lifting off. anim_progress sweeps
+         * a diagonal line across the screen; one side draws the new page,
+         * the other keeps the old. */
+        int16_t diag = (int16_t)((int32_t)m->anim_progress *
+                                 (READER_W + READER_H) / 100);
+        /* Old page underneath. */
+        draw_text_buffer(c, m, m->prev_cache, prev_text_len, 0, 0);
+        /* New page revealed where x + y < diag (forward) or > diag (back). */
+        for(int16_t y = 0; y < READER_H; y++) {
+            int16_t cut = (m->anim_dir > 0) ? (diag - y) : (READER_W - (diag - y));
+            if(cut <= 0) continue;
+            if(cut > READER_W) cut = READER_W;
+            /* For forward: clear left strip then redraw new on top.
+             * For back: clear right strip. */
+            canvas_set_color(c, m->settings->night_mode ? ColorBlack : ColorWhite);
+            if(m->anim_dir > 0) {
+                canvas_draw_line(c, 0, y, cut - 1, y);
+            } else {
+                canvas_draw_line(c, READER_W - cut, y, READER_W - 1, y);
+            }
+        }
+        canvas_set_color(c, m->settings->night_mode ? ColorWhite : ColorBlack);
+        /* Diagonal hairline between old and new for visual punctuation. */
+        if(m->anim_dir > 0) {
+            canvas_draw_line(c, diag, 0, 0, diag);
+        } else {
+            canvas_draw_line(c, READER_W - diag, 0, READER_W, diag);
+        }
+        /* Re-draw the new page in the revealed half: simplest is to draw
+         * full and let the box above hide the unrevealed strip - but we've
+         * already cleared the unrevealed half, so just draw on top. */
+        draw_text_page(c, m, 0);
     } else {
         draw_text_page(c, m, 0);
     }
