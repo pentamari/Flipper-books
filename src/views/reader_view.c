@@ -99,13 +99,27 @@ static uint8_t max_chars_per_line(TextSize t) {
     return 26;
 }
 
-/* Per-book hard ceiling on inline image height. v1 files were produced with
- * a 48-px-tall converter budget and a reader that capped at 32 (half the
- * screen); v2 files carry images up to 64 px tall and deserve more screen
- * real estate, so we give them 48 px - most of the page while still leaving
- * room for a couple lines of text below. */
+/* Per-book hard ceiling on inline image height. v1 keeps the original 32-px
+ * cap; v2 uses the full screen so the larger images the format allows aren't
+ * clipped. When a v2 image would consume essentially the whole page, the
+ * reader enters "plate" mode: the text budget for the page drops to zero and
+ * the image is centred full-screen, so the next Right-press advances past it. */
 static uint8_t inline_image_max_h(const FBook* b) {
-    return (b && b->version >= 2) ? 48u : 32u;
+    return (b && b->version >= 2) ? (uint8_t)READER_H : 32u;
+}
+
+/* True when a full-screen image lives at the current page offset, meaning
+ * the page should be rendered as the image alone. */
+static bool is_plate_page(const ReaderModel* m) {
+    if(!m->book || m->book->version < 2) return false;
+    if(!m->settings->show_images) return false;
+    if(m->settings->power_mode == PowerModePowerSaver) return false;
+    if(m->book->image_count == 0) return false;
+    uint16_t idx = fbook_next_image(m->book, m->page_offset);
+    if(idx == UINT16_MAX) return false;
+    uint32_t off = m->book->images[idx].offset_in_text;
+    if(off != m->page_offset) return false; /* must start exactly at page top */
+    return m->book->images[idx].h >= (READER_H - 8);
 }
 
 /* Height in pixels reserved at the top of the page for an inline image on the
@@ -130,6 +144,17 @@ static void compute_page_end(ReaderModel* m) {
     m->cache_len = fbook_read(m->book, m->page_offset, m->cache, sizeof(m->cache) - 1);
     m->cache[m->cache_len] = '\0';
 
+    /* Plate page: a v2 image that fills the screen takes the page on its
+     * own; advance past the single byte the converter inserts at the image
+     * marker so the next page resumes with text. */
+    if(is_plate_page(m)) {
+        m->page_end_offset = m->page_offset + 1;
+        if(m->page_end_offset > m->book->text_length) {
+            m->page_end_offset = m->book->text_length;
+        }
+        return;
+    }
+
     uint8_t lh = line_height_for_size(m->settings->text_size);
     uint8_t avail_h = READER_H;
     if(m->settings->show_progress_bar && avail_h > 3) avail_h -= 3;
@@ -143,7 +168,8 @@ static void compute_page_end(ReaderModel* m) {
         if(img_idx != UINT16_MAX &&
            m->book->images[img_idx].offset_in_text < m->page_offset + m->cache_len) {
             uint16_t h = m->book->images[img_idx].h;
-            if(h > 32) h = 32;
+            uint8_t cap = inline_image_max_h(m->book);
+            if(h > cap) h = cap;
             reserve = (uint8_t)h;
             if(reserve + 2 < avail_h) reserve += 2;
         }
@@ -214,7 +240,7 @@ static bool pop_page(PageStack* s, uint32_t* out) {
 }
 
 static void draw_night(Canvas* c, const BookSettings* s) {
-    if(s->night_mode) {
+    if(s && s->night_mode) {
         /* Fill the background with pixels-on so subsequent ColorWhite
          * (pixels-off) draws show through as light text on a dark page. */
         canvas_set_color(c, ColorBlack);
@@ -365,7 +391,9 @@ static void draw_image_on_page(Canvas* c, ReaderModel* m) {
     uint8_t h_cap = inline_image_max_h(m->book);
     uint16_t draw_h = h > h_cap ? h_cap : h;
     int16_t x = (READER_W - draw_w) / 2;
-    int16_t y = 0;
+    /* Plate pages: vertically centre the image so a portrait cover doesn't
+     * sit awkwardly at the top of the screen. */
+    int16_t y = is_plate_page(m) ? (int16_t)((READER_H - draw_h) / 2) : 0;
     canvas_draw_xbm(c, x, y, draw_w, draw_h, data);
     free(data);
 }
@@ -373,6 +401,19 @@ static void draw_image_on_page(Canvas* c, ReaderModel* m) {
 static void render_callback(Canvas* c, void* ctx) {
     ReaderModel* m = ctx;
     canvas_clear(c);
+
+    /* Defensive: settings can be NULL during the brief window between view
+     * allocation and the reader scene wiring it up. The original code only
+     * checked m->book and would dereference m->settings unconditionally
+     * later; on rare scheduling paths (notably right after the user changes
+     * power_mode in Settings, which fires a notification that can re-pump
+     * the GUI) this produced a bus error. */
+    if(!m->settings) {
+        canvas_set_font(c, FontPrimary);
+        canvas_draw_str_aligned(c, READER_W / 2, READER_H / 2, AlignCenter, AlignCenter, "...");
+        return;
+    }
+
     draw_night(c, m->settings);
 
     if(!m->book || !m->book->file) {
@@ -384,32 +425,86 @@ static void render_callback(Canvas* c, void* ctx) {
     bool animate = m->anim_dir != 0 &&
                    m->settings->page_animation != PageAnimNone &&
                    m->settings->power_mode != PowerModePowerSaver;
+
+    /* Compute prev_text_len once and clamp it to the cache size before either
+     * animation branch uses it - the subtraction is unsigned and a stale
+     * snapshot can underflow into a giant value that walks off prev_cache. */
+    uint16_t prev_text_len = 0;
+    if(m->prev_page_end_offset >= m->prev_page_offset) {
+        prev_text_len =
+            (uint16_t)(m->prev_page_end_offset - m->prev_page_offset);
+    }
+    if(prev_text_len > sizeof(m->prev_cache)) prev_text_len = sizeof(m->prev_cache);
+
     if(animate && m->settings->page_animation == PageAnimSlide) {
         /* Slide: outgoing page slides off, incoming slides in. anim_progress
          * runs 0..100. dir +1 means forward (next page in from right);
          * dir -1 means back (previous page in from left). */
         int16_t s = (int16_t)((int32_t)m->anim_progress * READER_W / 100);
-        uint16_t prev_text_len =
-            (uint16_t)(m->prev_page_end_offset - m->prev_page_offset);
         if(m->anim_dir > 0) {
-            /* Outgoing slides left: at -s. Incoming slides in from right: W - s. */
             draw_text_buffer(c, m, m->prev_cache, prev_text_len, -s, 0);
             draw_text_page(c, m, READER_W - s);
         } else {
-            /* Backward: outgoing slides right (s), incoming from left (s - W). */
             draw_text_buffer(c, m, m->prev_cache, prev_text_len, s, 0);
             draw_text_page(c, m, s - READER_W);
         }
     } else if(animate && m->settings->page_animation == PageAnimFade) {
-        /* Fade on a 1-bit screen: cross-dither between old and new every other
-         * column based on progress. Cheap but visible. */
-        if(m->anim_progress < 50) {
-            uint16_t prev_text_len =
-                (uint16_t)(m->prev_page_end_offset - m->prev_page_offset);
+        /* Fade on a 1-bit screen: a vertical wipe gives the user a real sense
+         * of progress without trying to fake alpha. Top half of the page is
+         * the new content, bottom half is the old, with the boundary moving
+         * downward as anim_progress runs 0..100. */
+        int16_t boundary = (int16_t)((int32_t)m->anim_progress * READER_H / 100);
+        canvas_set_bitmap_mode(c, false);
+        /* Draw new page first (it will cover everything we plan to keep). */
+        draw_text_page(c, m, 0);
+        /* Then re-draw the bottom strip with the old page. */
+        if(boundary < READER_H) {
+            /* Clip by carving out the top "boundary" rows: for the bottom we
+             * draw the prev page, and the top half from the new page is
+             * already on the canvas above. */
+            canvas_set_color(c, m->settings->night_mode ? ColorBlack : ColorWhite);
+            canvas_draw_box(c, 0, boundary, READER_W, READER_H - boundary);
+            canvas_set_color(c, m->settings->night_mode ? ColorWhite : ColorBlack);
+            /* Draw prev_cache shifted down by `boundary`-many lines: simplest
+             * faithful approximation is to render it from y=0 and rely on the
+             * fact that the box above covered the new page below the
+             * boundary, so the prev page fills the bottom strip. */
             draw_text_buffer(c, m, m->prev_cache, prev_text_len, 0, 0);
-        } else {
-            draw_text_page(c, m, 0);
         }
+    } else if(animate && m->settings->page_animation == PageAnimCurl) {
+        /* Curl: diagonal wipe from the bottom-right (forward) or top-left
+         * (back) corner, simulating a page lifting off. anim_progress sweeps
+         * a diagonal line across the screen; one side draws the new page,
+         * the other keeps the old. */
+        int16_t diag = (int16_t)((int32_t)m->anim_progress *
+                                 (READER_W + READER_H) / 100);
+        /* Old page underneath. */
+        draw_text_buffer(c, m, m->prev_cache, prev_text_len, 0, 0);
+        /* New page revealed where x + y < diag (forward) or > diag (back). */
+        for(int16_t y = 0; y < READER_H; y++) {
+            int16_t cut = (m->anim_dir > 0) ? (diag - y) : (READER_W - (diag - y));
+            if(cut <= 0) continue;
+            if(cut > READER_W) cut = READER_W;
+            /* For forward: clear left strip then redraw new on top.
+             * For back: clear right strip. */
+            canvas_set_color(c, m->settings->night_mode ? ColorBlack : ColorWhite);
+            if(m->anim_dir > 0) {
+                canvas_draw_line(c, 0, y, cut - 1, y);
+            } else {
+                canvas_draw_line(c, READER_W - cut, y, READER_W - 1, y);
+            }
+        }
+        canvas_set_color(c, m->settings->night_mode ? ColorWhite : ColorBlack);
+        /* Diagonal hairline between old and new for visual punctuation. */
+        if(m->anim_dir > 0) {
+            canvas_draw_line(c, diag, 0, 0, diag);
+        } else {
+            canvas_draw_line(c, READER_W - diag, 0, READER_W, diag);
+        }
+        /* Re-draw the new page in the revealed half: simplest is to draw
+         * full and let the box above hide the unrevealed strip - but we've
+         * already cleared the unrevealed half, so just draw on top. */
+        draw_text_page(c, m, 0);
     } else {
         draw_text_page(c, m, 0);
     }

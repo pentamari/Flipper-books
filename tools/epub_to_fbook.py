@@ -22,9 +22,12 @@ from typing import List, Optional, Tuple
 from xml.etree import ElementTree as ET
 
 try:
-    from PIL import Image  # type: ignore
+    from PIL import Image, ImageOps, ImageFilter, ImageEnhance  # type: ignore
 except ImportError:  # pragma: no cover - Pillow is optional
     Image = None  # type: ignore
+    ImageOps = None  # type: ignore
+    ImageFilter = None  # type: ignore
+    ImageEnhance = None  # type: ignore
 
 FBOOK_V1_MAGIC = b"FBOOK\x01"
 FBOOK_V2_MAGIC = b"FBOOK\x02"
@@ -158,20 +161,45 @@ class _TextExtractor(HTMLParser):
         return text.strip()
 
 
-def _dither_to_1bpp(im) -> Tuple[int, int, bytes]:
+def _prepare_for_1bit(im, target_w, target_h):
+    """Pre-process a PIL image so the 1bpp quantizer produces something
+    legible on the Flipper's tiny screen.
+
+    Steps:
+      1. flatten transparency onto a white page (converter EPUBs frequently
+         have RGBA cover art with a transparent backdrop; without this PIL
+         premultiplies against black and the cover comes out as a blob);
+      2. convert to 8-bit grayscale ("L");
+      3. autocontrast - stretches the grayscale histogram so the darkest
+         pixel maps to 0 and the lightest to 255. Gives the dither room to
+         work even on flat scans;
+      4. mild sharpening pass with a 3x3 unsharp mask. This is a big
+         readability win at thumbnail sizes - small text and outlines pop
+         instead of dissolving;
+      5. resize with LANCZOS, which preserves detail far better than the
+         BILINEAR PIL falls back to when no resample is given;
+      6. clamp to the requested dimensions.
+    """
+    if im.mode in ("RGBA", "LA", "PA"):
+        bg = Image.new("RGBA", im.size, (255, 255, 255, 255))
+        bg.paste(im, mask=im.split()[-1])
+        im = bg.convert("RGB")
     im = im.convert("L")
+    if ImageOps is not None:
+        im = ImageOps.autocontrast(im, cutoff=2)
+    if ImageFilter is not None:
+        im = im.filter(ImageFilter.UnsharpMask(radius=1.0, percent=120, threshold=3))
     w, h = im.size
-    max_w, max_h = IMAGE_MAX_WIDTH, IMAGE_MAX_HEIGHT
-    scale = min(max_w / w, max_h / h, 1.0)
+    scale = min(target_w / w, target_h / h, 1.0)
     if scale < 1.0:
         w = max(1, int(w * scale))
         h = max(1, int(h * scale))
-        im = im.resize((w, h))
-    mono = im.convert("1")
-    # Flipper's canvas_draw_xbm expects XBM byte order: LSB-first within each
-    # byte (bit 0 = leftmost pixel). PIL packs 1bpp MSB-first, so we pack
-    # pixel-by-pixel in LSB-first order. Black in PIL 1bpp is 0; in XBM a set
-    # bit means "pixel drawn" (black on the e-ink-ish LCD).
+        im = im.resize((w, h), Image.LANCZOS if hasattr(Image, "LANCZOS") else Image.BICUBIC)
+    return im, w, h
+
+
+def _pack_1bpp_lsb(mono, w, h) -> bytes:
+    """Pack a PIL '1' image into LSB-first row-major bytes (XBM order)."""
     row_bytes = (w + 7) // 8
     out = bytearray(row_bytes * h)
     px = mono.load()
@@ -179,7 +207,21 @@ def _dither_to_1bpp(im) -> Tuple[int, int, bytes]:
         for x in range(w):
             if px[x, y] == 0:  # black
                 out[y * row_bytes + (x >> 3)] |= 1 << (x & 7)
-    return w, h, bytes(out)
+    return bytes(out)
+
+
+def _dither_to_1bpp(im) -> Tuple[int, int, bytes]:
+    """High-quality 1bpp conversion for inline images: autocontrast +
+    unsharp mask + LANCZOS resize + Floyd-Steinberg dither. The result is
+    written in XBM byte order (LSB first within each byte) so it goes
+    straight into canvas_draw_xbm at runtime."""
+    im, w, h = _prepare_for_1bit(im, IMAGE_MAX_WIDTH, IMAGE_MAX_HEIGHT)
+    # PIL's "1" conversion uses Floyd-Steinberg dither by default, which
+    # works well on photographic content. For line-art (most diagrams in
+    # technical books) it can produce noisy speckle, but the alternative
+    # (no dither) loses gradients - dither is the better default.
+    mono = im.convert("1")
+    return w, h, _pack_1bpp_lsb(mono, w, h)
 
 
 def _find_opf(zf: zipfile.ZipFile) -> str:
@@ -276,25 +318,17 @@ def _word_count(s: str) -> int:
 
 
 def _render_cover_1bpp(im, max_w=COVER_MAX_WIDTH, max_h=COVER_MAX_HEIGHT) -> Tuple[int, int, bytes]:
-    """Convert a PIL image to a tightly-packed LSB-first 1bpp cover thumbnail."""
-    im = im.convert("L")
-    w, h = im.size
-    scale = min(max_w / w, max_h / h, 1.0)
-    if scale < 1.0:
-        w = max(1, int(w * scale))
-        h = max(1, int(h * scale))
-        im = im.resize((w, h))
-    # Floyd-Steinberg dither (PIL's default for "1" mode) keeps cover art
-    # readable at thumbnail size.
+    """Convert a PIL image to a tightly-packed LSB-first 1bpp cover thumbnail.
+
+    Uses the same autocontrast + unsharp + LANCZOS pipeline as the inline
+    image converter, so cover lettering stays legible at the 64x64 size the
+    fbook2 format reserves for it. The on-device library view downsamples
+    further to 16x16, so feeding it a clean 64x64 here is what gives the
+    final thumbnail its detail.
+    """
+    im, w, h = _prepare_for_1bit(im, max_w, max_h)
     mono = im.convert("1")
-    row_bytes = (w + 7) // 8
-    out = bytearray(row_bytes * h)
-    px = mono.load()
-    for y in range(h):
-        for x in range(w):
-            if px[x, y] == 0:
-                out[y * row_bytes + (x >> 3)] |= 1 << (x & 7)
-    return w, h, bytes(out)
+    return w, h, _pack_1bpp_lsb(mono, w, h)
 
 
 def _build_book_data(zf, opf_path, include_images):

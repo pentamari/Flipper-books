@@ -8,7 +8,7 @@
 #include <string.h>
 
 #define ROW_HEIGHT     16   /* fits 4 rows on a 64-row display */
-#define COVER_PX       14   /* cover thumbnail drawn at 14x14 */
+#define COVER_PX       16   /* cover thumbnail drawn at 16x16 - fills row */
 #define LIST_VISIBLE   4
 #define HEADER_LEN     20
 
@@ -58,22 +58,39 @@ static uint8_t cover_pixel(const LibraryEntry* e, uint16_t x, uint16_t y) {
 }
 
 static void draw_cover(Canvas* c, const LibraryEntry* e, int16_t dx, int16_t dy) {
-    /* Box outline first - gives books without cover art a placeholder. */
-    canvas_draw_frame(c, dx, dy, COVER_PX, COVER_PX);
     if(!e->cover_data || e->cover_w == 0 || e->cover_h == 0) {
-        /* Diagonal fill so empty covers are obvious. */
+        /* Empty placeholder: outlined box with a diagonal fill. */
+        canvas_draw_frame(c, dx, dy, COVER_PX, COVER_PX);
         for(int16_t i = 1; i < COVER_PX - 1; i += 3) {
             canvas_draw_dot(c, dx + i, dy + i);
         }
         return;
     }
-    /* Nearest-neighbour scale from native cover_w/h to COVER_PX. */
-    for(int16_t y = 0; y < COVER_PX - 2; y++) {
-        for(int16_t x = 0; x < COVER_PX - 2; x++) {
-            uint16_t sx = (uint16_t)((uint32_t)x * e->cover_w / (COVER_PX - 2));
-            uint16_t sy = (uint16_t)((uint32_t)y * e->cover_h / (COVER_PX - 2));
-            if(cover_pixel(e, sx, sy)) {
-                canvas_draw_dot(c, dx + 1 + x, dy + 1 + y);
+    /* Box-filter downsample from cover_w x cover_h (32x32 cache by default)
+     * to the COVER_PX display square. For each destination pixel we look at
+     * the source rectangle it represents and turn it on if at least half the
+     * source pixels are set. This produces dramatically cleaner thumbnails
+     * than nearest-neighbour, especially for the small detail in dust-jacket
+     * lettering. */
+    for(int16_t dyp = 0; dyp < COVER_PX; ++dyp) {
+        uint16_t sy0 = (uint16_t)((uint32_t)dyp * e->cover_h / COVER_PX);
+        uint16_t sy1 = (uint16_t)((uint32_t)(dyp + 1) * e->cover_h / COVER_PX);
+        if(sy1 <= sy0) sy1 = sy0 + 1;
+        if(sy1 > e->cover_h) sy1 = e->cover_h;
+        for(int16_t dxp = 0; dxp < COVER_PX; ++dxp) {
+            uint16_t sx0 = (uint16_t)((uint32_t)dxp * e->cover_w / COVER_PX);
+            uint16_t sx1 = (uint16_t)((uint32_t)(dxp + 1) * e->cover_w / COVER_PX);
+            if(sx1 <= sx0) sx1 = sx0 + 1;
+            if(sx1 > e->cover_w) sx1 = e->cover_w;
+            uint32_t set = 0, area = 0;
+            for(uint16_t sy = sy0; sy < sy1; ++sy) {
+                for(uint16_t sx = sx0; sx < sx1; ++sx) {
+                    set += cover_pixel(e, sx, sy);
+                    area++;
+                }
+            }
+            if(area > 0 && set * 2 >= area) {
+                canvas_draw_dot(c, dx + dxp, dy + dyp);
             }
         }
     }
@@ -242,10 +259,15 @@ void library_view_reset(LibraryView* v, const char* header, bool delete_mode) {
 
 /* Downsample a source 1bpp cover into a tightly-packed 1bpp thumbnail of at
  * most COVER_CACHE_PX*COVER_CACHE_PX bytes. Returns NULL on failure or an
- * allocation the caller is expected to free on the next reset. Using a small
- * cached copy instead of keeping the converter's 64x64 in RAM saves ~11 KB
- * across a full library. */
-#define COVER_CACHE_PX 16
+ * allocation the caller is expected to free on the next reset.
+ *
+ * Cache size 32 keeps the full v2 cover detail (the converter writes 64x64,
+ * so this is one halving) while still costing only 128 bytes/entry - across
+ * a 24-book library that's ~3 KB, vs the 12 KB the raw 64x64 covers cost.
+ * The display itself is still a 14 px square, but a 32x32 cache gives the
+ * runtime nearest-neighbour scaler enough information to avoid the splotchy
+ * look 16x16 produced. */
+#define COVER_CACHE_PX 32
 static uint8_t* downsample_cover(const uint8_t* src, uint16_t sw, uint16_t sh) {
     if(!src || sw == 0 || sh == 0) return NULL;
     uint16_t src_rb = (uint16_t)((sw + 7u) >> 3);
@@ -253,12 +275,31 @@ static uint8_t* downsample_cover(const uint8_t* src, uint16_t sw, uint16_t sh) {
     uint8_t* out = malloc((size_t)dst_rb * COVER_CACHE_PX);
     if(!out) return NULL;
     memset(out, 0, (size_t)dst_rb * COVER_CACHE_PX);
-    for(uint16_t y = 0; y < COVER_CACHE_PX; ++y) {
-        uint16_t sy = (uint16_t)((uint32_t)y * sh / COVER_CACHE_PX);
-        for(uint16_t x = 0; x < COVER_CACHE_PX; ++x) {
-            uint16_t sx = (uint16_t)((uint32_t)x * sw / COVER_CACHE_PX);
-            uint8_t bit = (src[(uint32_t)sy * src_rb + (sx >> 3)] >> (sx & 7u)) & 1u;
-            if(bit) out[(uint32_t)y * dst_rb + (x >> 3)] |= (uint8_t)(1u << (x & 7u));
+    /* Box-filter (count-and-threshold) downsample. For 1bpp we don't have
+     * intensity, but we can preserve detail by setting a dest pixel only if
+     * at least half the source pixels in its catchment area are set. The
+     * old version used nearest-neighbour, which dropped any feature smaller
+     * than the sample stride - including most dust-jacket lettering. */
+    for(uint16_t dy = 0; dy < COVER_CACHE_PX; ++dy) {
+        uint16_t sy0 = (uint16_t)((uint32_t)dy * sh / COVER_CACHE_PX);
+        uint16_t sy1 = (uint16_t)((uint32_t)(dy + 1) * sh / COVER_CACHE_PX);
+        if(sy1 <= sy0) sy1 = sy0 + 1;
+        if(sy1 > sh) sy1 = sh;
+        for(uint16_t dx = 0; dx < COVER_CACHE_PX; ++dx) {
+            uint16_t sx0 = (uint16_t)((uint32_t)dx * sw / COVER_CACHE_PX);
+            uint16_t sx1 = (uint16_t)((uint32_t)(dx + 1) * sw / COVER_CACHE_PX);
+            if(sx1 <= sx0) sx1 = sx0 + 1;
+            if(sx1 > sw) sx1 = sw;
+            uint32_t set = 0, area = 0;
+            for(uint16_t y = sy0; y < sy1; ++y) {
+                for(uint16_t x = sx0; x < sx1; ++x) {
+                    set += (src[(uint32_t)y * src_rb + (x >> 3)] >> (x & 7u)) & 1u;
+                    area++;
+                }
+            }
+            if(area > 0 && set * 2 >= area) {
+                out[(uint32_t)dy * dst_rb + (dx >> 3)] |= (uint8_t)(1u << (dx & 7u));
+            }
         }
     }
     return out;
