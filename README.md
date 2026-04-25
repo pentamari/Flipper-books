@@ -1,6 +1,6 @@
 # Flipper Books
 
-An EPUB reader for the Flipper Zero (Momentum firmware).
+An EPUB reader for the Flipper Zero.
 
 Load `.epub` files from your phone or computer onto the SD card, then read them
 on the device with bookmarks, table of contents, search, night mode,
