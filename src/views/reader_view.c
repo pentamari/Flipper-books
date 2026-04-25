@@ -3,6 +3,7 @@
 #include <furi.h>
 #include <gui/elements.h>
 #include <input/input.h>
+#include <notification/notification_messages.h>
 #include <string.h>
 #include <stdlib.h>
 
