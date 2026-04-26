@@ -104,26 +104,21 @@ static uint8_t max_chars_per_line(TextSize t) {
 }
 
 /* Per-book hard ceiling on inline image height. v1 keeps the original 32-px
- * cap; v2 uses the full screen so the larger images the format allows aren't
- * clipped. When a v2 image would consume essentially the whole page, the
- * reader enters "plate" mode: the text budget for the page drops to zero and
- * the image is centred full-screen, so the next Right-press advances past it. */
+ * cap; v2 used to ask for the full screen but that turned out to provoke a
+ * fault in the field on the very first open of certain books, so we now keep
+ * v2 at 48 px - still better than v1's 32, and well within the headroom the
+ * canvas/word-wrap maths was tested with. */
 static uint8_t inline_image_max_h(const FBook* b) {
-    return (b && b->version >= 2) ? (uint8_t)READER_H : 32u;
+    return (b && b->version >= 2) ? 48u : 32u;
 }
 
-/* True when a full-screen image lives at the current page offset, meaning
- * the page should be rendered as the image alone. */
+/* Plate-page mode (whole screen given to one image) was disabled after
+ * crash reports right after opening v2 books with cover-page art. The
+ * normal reserve+text path renders covers the same way but without the
+ * special-case branching. */
 static bool is_plate_page(const ReaderModel* m) {
-    if(!m->book || m->book->version < 2) return false;
-    if(!m->settings->show_images) return false;
-    if(m->settings->power_mode == PowerModePowerSaver) return false;
-    if(m->book->image_count == 0) return false;
-    uint16_t idx = fbook_next_image(m->book, m->page_offset);
-    if(idx == UINT16_MAX) return false;
-    uint32_t off = m->book->images[idx].offset_in_text;
-    if(off != m->page_offset) return false; /* must start exactly at page top */
-    return m->book->images[idx].h >= (READER_H - 8);
+    (void)m;
+    return false;
 }
 
 /* Height in pixels reserved at the top of the page for an inline image on the
