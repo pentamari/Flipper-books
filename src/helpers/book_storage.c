@@ -17,6 +17,7 @@
 
 FBook* fbook_alloc(void) {
     FBook* b = malloc(sizeof(FBook));
+    if(!b) return NULL;
     memset(b, 0, sizeof(*b));
     return b;
 }
@@ -227,6 +228,7 @@ static bool parse_header(FBook* b) {
 }
 
 bool fbook_open(FBook* b, const char* path) {
+    if(!b || !path || !path[0]) return false;
     fbook_close(b);
     b->storage = furi_record_open(RECORD_STORAGE);
     storage_simply_mkdir(b->storage, BOOKS_APP_FOLDER);
