@@ -39,7 +39,7 @@ void books_scene_reader_on_enter(void* ctx) {
     if(!g_book) {
         g_book = fbook_alloc();
     }
-    if(!fbook_open(g_book, app->current_book_path)) {
+    if(!g_book || !fbook_open(g_book, app->current_book_path)) {
         // failed to open - show popup that returns to the library after a tap or timeout
         popup_reset(app->popup);
         const char* dot = strrchr(app->current_book_path, '.');
