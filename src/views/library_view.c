@@ -184,11 +184,16 @@ static bool input_callback(InputEvent* evt, void* ctx) {
         v->view, LibraryModel * m, {
             switch(evt->key) {
             case InputKeyUp:
-                if(m->selected > 0) m->selected--;
+                if(m->count > 0) {
+                    m->selected = (m->selected == 0) ? (uint16_t)(m->count - 1)
+                                                     : (uint16_t)(m->selected - 1);
+                }
                 consumed = true;
                 break;
             case InputKeyDown:
-                if(m->selected + 1 < m->count) m->selected++;
+                if(m->count > 0) {
+                    m->selected = (uint16_t)((m->selected + 1) % m->count);
+                }
                 consumed = true;
                 break;
             case InputKeyOk:

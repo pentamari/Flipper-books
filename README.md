@@ -20,6 +20,7 @@ auto-scroll, and battery-friendly power modes.
 ### Library
 - **Cover thumbnails** in a custom library view with **inline progress bars**
   next to each title.
+- **Wrap-around scrolling**: Up/Down loops from first to last entry.
 - **Sort modes**: Name / Recent / Progress / Favorites first.
 - **Favorite toggle** per book, displayed as a star next to the cover.
 - **Mark Finished** (manual or auto when reaching the end).
