@@ -219,6 +219,7 @@ static bool input_callback(InputEvent* evt, void* ctx) {
 
 LibraryView* library_view_alloc(void) {
     LibraryView* v = malloc(sizeof(LibraryView));
+    if(!v) return NULL;
     memset(v, 0, sizeof(*v));
     v->view = view_alloc();
     view_allocate_model(v->view, ViewModelTypeLocking, sizeof(LibraryModel));

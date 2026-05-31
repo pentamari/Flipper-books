@@ -270,6 +270,10 @@ bool fbook_open(FBook* b, const char* path) {
 
     strncpy(b->path, resolved, sizeof(b->path) - 1);
     b->file = storage_file_alloc(b->storage);
+    if(!b->file) {
+        fbook_close(b);
+        return false;
+    }
     if(!storage_file_open(b->file, resolved, FSAM_READ, FSOM_OPEN_EXISTING)) {
         fbook_close(b);
         return false;
@@ -392,10 +396,10 @@ static void write_u32(File* f, uint32_t v) {
 static void write_fixed(File* f, const char* s, size_t n) {
     uint8_t buf[128];
     if(n > sizeof(buf)) n = sizeof(buf);
-    size_t l = strlen(s);
+    size_t l = s ? strlen(s) : 0;
     if(l > n) l = n;
     memset(buf, 0, n);
-    memcpy(buf, s, l);
+    if(l > 0) memcpy(buf, s, l);
     storage_file_write(f, buf, n);
 }
 
@@ -439,7 +443,8 @@ bool fbook_import_txt(const char* txt_path, char* out_path, size_t out_len) {
     File* in = storage_file_alloc(storage);
     File* out = storage_file_alloc(storage);
     bool ok = false;
-    if(storage_file_open(in, txt_path, FSAM_READ, FSOM_OPEN_EXISTING) &&
+    if(in && out &&
+       storage_file_open(in, txt_path, FSAM_READ, FSOM_OPEN_EXISTING) &&
        storage_file_open(out, dst, FSAM_WRITE, FSOM_CREATE_ALWAYS)) {
         uint32_t total = storage_file_size(in);
         storage_file_seek(in, 0, true);
@@ -463,10 +468,14 @@ bool fbook_import_txt(const char* txt_path, char* out_path, size_t out_len) {
             remaining -= got;
         }
     }
-    storage_file_close(in);
-    storage_file_close(out);
-    storage_file_free(in);
-    storage_file_free(out);
+    if(in) {
+        storage_file_close(in);
+        storage_file_free(in);
+    }
+    if(out) {
+        storage_file_close(out);
+        storage_file_free(out);
+    }
     furi_record_close(RECORD_STORAGE);
 
     if(ok) {
@@ -523,6 +532,7 @@ uint16_t fbook_scan_library(char paths[][256], uint16_t max_paths) {
     const char* dirs[] = {BOOKS_LIBRARY, BOOKS_CACHE};
     for(size_t d = 0; d < sizeof(dirs) / sizeof(dirs[0]) && count < max_paths; ++d) {
         File* dir = storage_file_alloc(storage);
+        if(!dir) continue;
         if(storage_dir_open(dir, dirs[d])) {
             FileInfo info;
             char name[128];
@@ -553,7 +563,7 @@ bool fbook_peek(const char* path,
     Storage* storage = furi_record_open(RECORD_STORAGE);
     File* f = storage_file_alloc(storage);
     bool ok = false;
-    if(storage_file_open(f, path, FSAM_READ, FSOM_OPEN_EXISTING)) {
+    if(f && storage_file_open(f, path, FSAM_READ, FSOM_OPEN_EXISTING)) {
         char magic[FBOOK_MAGIC_LEN];
         if(storage_file_read(f, magic, FBOOK_MAGIC_LEN) == FBOOK_MAGIC_LEN) {
             uint16_t ver = read_u16(f);
@@ -606,7 +616,7 @@ bool fbook_peek(const char* path,
         }
         storage_file_close(f);
     }
-    storage_file_free(f);
+    if(f) storage_file_free(f);
     furi_record_close(RECORD_STORAGE);
     return ok;
 }
@@ -615,7 +625,7 @@ uint8_t* fbook_peek_cover(const char* path, uint16_t* w, uint16_t* h, uint8_t* f
     Storage* storage = furi_record_open(RECORD_STORAGE);
     File* f = storage_file_alloc(storage);
     uint8_t* buf = NULL;
-    if(storage_file_open(f, path, FSAM_READ, FSOM_OPEN_EXISTING)) {
+    if(f && storage_file_open(f, path, FSAM_READ, FSOM_OPEN_EXISTING)) {
         char magic[FBOOK_MAGIC_LEN];
         if(storage_file_read(f, magic, FBOOK_MAGIC_LEN) == FBOOK_MAGIC_LEN) {
             uint16_t ver = read_u16(f);
@@ -652,7 +662,7 @@ uint8_t* fbook_peek_cover(const char* path, uint16_t* w, uint16_t* h, uint8_t* f
         }
         storage_file_close(f);
     }
-    storage_file_free(f);
+    if(f) storage_file_free(f);
     furi_record_close(RECORD_STORAGE);
     return buf;
 }

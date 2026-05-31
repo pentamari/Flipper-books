@@ -194,6 +194,7 @@ static void scroll_timer_cb(void* ctx) {
 
 TocView* toc_view_alloc(void) {
     TocView* v = malloc(sizeof(TocView));
+    if(!v) return NULL;
     memset(v, 0, sizeof(*v));
     v->view = view_alloc();
     view_allocate_model(v->view, ViewModelTypeLocking, sizeof(TocModel));
@@ -232,6 +233,7 @@ void toc_view_reset(TocView* v, const char* header, const char* empty_text) {
 }
 
 void toc_view_add_entry(TocView* v, const char* text) {
+    if(!v || !text) return;
     with_view_model(
         v->view,
         TocModel * m,

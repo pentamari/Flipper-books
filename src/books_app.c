@@ -16,6 +16,7 @@ static bool books_back_event_callback(void* ctx) {
 
 BooksApp* books_app_alloc(void) {
     BooksApp* app = malloc(sizeof(BooksApp));
+    if(!app) return NULL;
     memset(app, 0, sizeof(*app));
 
     app->gui = furi_record_open(RECORD_GUI);
@@ -105,6 +106,7 @@ void books_app_free(BooksApp* app) {
 int32_t flipper_books_app(void* p) {
     UNUSED(p);
     BooksApp* app = books_app_alloc();
+    if(!app) return -1;
 
     scene_manager_next_scene(app->scene_manager, BooksSceneStart);
 

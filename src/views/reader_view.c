@@ -648,7 +648,8 @@ static bool input_callback(InputEvent* evt, void* ctx) {
             r->view, ReaderModel * m, {
                 switch(evt->key) {
                 case InputKeyRight:
-                    if(m->page_end_offset < m->book->text_length) {
+                    if(m->book && m->settings &&
+                       m->page_end_offset < m->book->text_length) {
                         snapshot_current_page(m);
                         push_page(&m->stack, m->page_offset);
                         m->page_offset = m->page_end_offset;
@@ -725,6 +726,7 @@ static bool input_callback(InputEvent* evt, void* ctx) {
 
 ReaderView* reader_view_alloc(void) {
     ReaderView* r = malloc(sizeof(ReaderView));
+    if(!r) return NULL;
     memset(r, 0, sizeof(*r));
     r->view = view_alloc();
     view_allocate_model(r->view, ViewModelTypeLocking, sizeof(ReaderModel));
@@ -766,6 +768,7 @@ void reader_view_set_book(ReaderView* r, FBook* book) {
 }
 
 void reader_view_set_settings(ReaderView* r, const BookSettings* settings) {
+    if(!r || !settings) return;
     with_view_model(
         r->view, ReaderModel * m, {
             m->settings = settings;
@@ -791,6 +794,7 @@ void reader_view_set_settings(ReaderView* r, const BookSettings* settings) {
 }
 
 void reader_view_set_progress(ReaderView* r, const BookProgress* progress) {
+    if(!r || !progress) return;
     with_view_model(
         r->view, ReaderModel * m, {
             m->progress = *progress;

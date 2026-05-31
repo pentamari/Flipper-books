@@ -35,22 +35,22 @@ void book_settings_set_defaults(BookSettings* s) {
 static bool write_all(Storage* storage, const char* path, const void* data, size_t len) {
     File* f = storage_file_alloc(storage);
     bool ok = false;
-    if(storage_file_open(f, path, FSAM_WRITE, FSOM_CREATE_ALWAYS)) {
+    if(f && storage_file_open(f, path, FSAM_WRITE, FSOM_CREATE_ALWAYS)) {
         ok = storage_file_write(f, data, len) == len;
         storage_file_close(f);
     }
-    storage_file_free(f);
+    if(f) storage_file_free(f);
     return ok;
 }
 
 static bool read_all(Storage* storage, const char* path, void* data, size_t len) {
     File* f = storage_file_alloc(storage);
     bool ok = false;
-    if(storage_file_open(f, path, FSAM_READ, FSOM_OPEN_EXISTING)) {
+    if(f && storage_file_open(f, path, FSAM_READ, FSOM_OPEN_EXISTING)) {
         ok = storage_file_read(f, data, len) == len;
         storage_file_close(f);
     }
-    storage_file_free(f);
+    if(f) storage_file_free(f);
     return ok;
 }
 

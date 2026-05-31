@@ -31,7 +31,7 @@ bool book_progress_load(const char* book_path, BookProgress* p) {
     progress_path_for(book_path, path, sizeof(path));
     File* f = storage_file_alloc(storage);
     bool ok = false;
-    if(storage_file_open(f, path, FSAM_READ, FSOM_OPEN_EXISTING)) {
+    if(f && storage_file_open(f, path, FSAM_READ, FSOM_OPEN_EXISTING)) {
         ProgressBlob b;
         if(storage_file_read(f, &b, sizeof(b)) == sizeof(b) &&
            (b.magic == PROGRESS_MAGIC_V2 || b.magic == PROGRESS_MAGIC_V1)) {
@@ -40,7 +40,7 @@ bool book_progress_load(const char* book_path, BookProgress* p) {
         }
         storage_file_close(f);
     }
-    storage_file_free(f);
+    if(f) storage_file_free(f);
     if(!ok) book_progress_set_defaults(p);
     furi_record_close(RECORD_STORAGE);
     return ok;
@@ -53,12 +53,12 @@ bool book_progress_save(const char* book_path, const BookProgress* p) {
     progress_path_for(book_path, path, sizeof(path));
     File* f = storage_file_alloc(storage);
     bool ok = false;
-    if(storage_file_open(f, path, FSAM_WRITE, FSOM_CREATE_ALWAYS)) {
+    if(f && storage_file_open(f, path, FSAM_WRITE, FSOM_CREATE_ALWAYS)) {
         ProgressBlob b = {.magic = PROGRESS_MAGIC_V2, .version = 2, .data = *p};
         ok = storage_file_write(f, &b, sizeof(b)) == sizeof(b);
         storage_file_close(f);
     }
-    storage_file_free(f);
+    if(f) storage_file_free(f);
     furi_record_close(RECORD_STORAGE);
     return ok;
 }
