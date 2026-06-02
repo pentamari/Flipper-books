@@ -64,24 +64,24 @@ typedef struct {
 } SettingsBlob;
 
 static void book_settings_sanitize(BookSettings* s) {
-    if(s->power_mode < PowerModePowerSaver || s->power_mode > PowerModeGraphics) {
+    if(s->power_mode > PowerModeGraphics) {
         s->power_mode = PowerModeBalanced;
     }
-    if(s->page_animation < PageAnimNone || s->page_animation > PageAnimCurl) {
+    if(s->page_animation > PageAnimCurl) {
         s->page_animation = PageAnimSlide;
     }
-    if(s->text_size < TextSizeTiny || s->text_size > TextSizeLarge) {
+    if(s->text_size > TextSizeLarge) {
         s->text_size = TextSizeSmall;
     }
     if(s->auto_scroll_speed < 1 || s->auto_scroll_speed > 10) s->auto_scroll_speed = 6;
     if(s->backlight_level > 100) s->backlight_level = 60;
-    if(s->line_spacing < LineSpacingTight || s->line_spacing > LineSpacingDouble) {
+    if(s->line_spacing > LineSpacingDouble) {
         s->line_spacing = LineSpacingNormal;
     }
-    if(s->font_family < FontFamilyDefault || s->font_family > FontFamilySans) {
+    if(s->font_family > FontFamilySans) {
         s->font_family = FontFamilyDefault;
     }
-    if(s->margin < MarginCompact || s->margin > MarginWide) s->margin = MarginNormal;
+    if(s->margin > MarginWide) s->margin = MarginNormal;
     switch(s->sleep_timer_minutes) {
     case 0:
     case 5:
@@ -94,7 +94,7 @@ static void book_settings_sanitize(BookSettings* s) {
         s->sleep_timer_minutes = 0;
         break;
     }
-    if(s->library_sort < SortModeName || s->library_sort > SortModeFavoritesFirst) {
+    if(s->library_sort > SortModeFavoritesFirst) {
         s->library_sort = SortModeRecent;
     }
 }
