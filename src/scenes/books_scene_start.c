@@ -32,7 +32,8 @@ static void build_continue_label(BooksApp* app) {
     }
     uint8_t pct = 0;
     if(app->progress.total_bytes > 0) {
-        uint32_t p = app->progress.offset * 100u / app->progress.total_bytes;
+        uint32_t p =
+            (uint32_t)((uint64_t)app->progress.offset * 100u / app->progress.total_bytes);
         pct = p > 100 ? 100 : (uint8_t)p;
     }
     snprintf(continue_label, sizeof(continue_label),

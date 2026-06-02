@@ -51,6 +51,10 @@ MAX_IMAGES = 64
 V2_HEADER_SIZE = 224
 V2_CHAPTER_SIZE = 4 + 4 + CHAPTER_TITLE_V2  # 56
 V2_IMAGE_SIZE = 4 + 2 + 2 + 4 + 4 + 1 + 3   # 20
+MAX_HTML_MEMBER_BYTES = 4 * 1024 * 1024
+MAX_XML_MEMBER_BYTES = 1024 * 1024
+MAX_IMAGE_MEMBER_BYTES = 8 * 1024 * 1024
+MAX_TEXT_BYTES = 16 * 1024 * 1024
 
 NS = {
     "opf": "http://www.idpf.org/2007/opf",
@@ -86,6 +90,13 @@ DISPLAY_TRANSLATION = {
 def _display_text(s: str) -> str:
     """Normalize punctuation to glyphs the Flipper built-in fonts render well."""
     return s.translate(DISPLAY_TRANSLATION)
+
+
+def _read_zip_member(zf: zipfile.ZipFile, path: str, max_bytes: int) -> bytes:
+    info = zf.getinfo(path)
+    if info.file_size > max_bytes:
+        raise ValueError(f"EPUB member too large: {path} ({info.file_size} bytes)")
+    return zf.read(info)
 
 
 @dataclass
@@ -267,8 +278,7 @@ def _find_opf(zf: zipfile.ZipFile) -> str:
 
 
 def _load_spine(zf: zipfile.ZipFile, opf_path: str):
-    with zf.open(opf_path) as f:
-        root = ET.parse(f).getroot()
+    root = ET.fromstring(_read_zip_member(zf, opf_path, MAX_XML_MEMBER_BYTES))
 
     title = _display_text((root.findtext(".//dc:title", default="", namespaces=NS) or "").strip())
     author = _display_text((root.findtext(".//dc:creator", default="", namespaces=NS) or "").strip())
@@ -338,7 +348,7 @@ def _load_spine(zf: zipfile.ZipFile, opf_path: str):
 
         toc_path = resolve(toc_href)
         try:
-            toc_root = ET.fromstring(zf.read(toc_path))
+            toc_root = ET.fromstring(_read_zip_member(zf, toc_path, MAX_XML_MEMBER_BYTES))
         except Exception:
             return {}
 
@@ -509,7 +519,8 @@ def _build_book_data(zf, opf_path, include_images):
 
     for doc_path in documents:
         try:
-            raw = zf.read(doc_path).decode("utf-8", errors="replace")
+            raw = _read_zip_member(zf, doc_path, MAX_HTML_MEMBER_BYTES).decode(
+                "utf-8", errors="replace")
         except KeyError:
             continue
         chap_title = toc_titles.get(doc_path) or _extract_title_from_doc(raw) or os.path.basename(doc_path)
@@ -526,8 +537,8 @@ def _build_book_data(zf, opf_path, include_images):
                 if len(images) >= MAX_IMAGES:
                     return None
                 try:
-                    data = zf.read(full)
-                except KeyError:
+                    data = _read_zip_member(zf, full, MAX_IMAGE_MEMBER_BYTES)
+                except (KeyError, ValueError):
                     return None
                 try:
                     with Image.open(__import__("io").BytesIO(data)) as im:
@@ -560,6 +571,8 @@ def _build_book_data(zf, opf_path, include_images):
             pos = m.end()
         text_buf.extend(text[pos:].encode("utf-8", errors="replace"))
         text_buf.extend(b"\n\n")
+        if len(text_buf) > MAX_TEXT_BYTES:
+            raise ValueError(f"Extracted text is too large ({len(text_buf)} bytes)")
 
     _assign_default_chapter_pages(chapters, images, text_buf)
 
@@ -567,7 +580,7 @@ def _build_book_data(zf, opf_path, include_images):
     cover_data = b""
     if cover_path and Image is not None:
         try:
-            raw = zf.read(cover_path)
+            raw = _read_zip_member(zf, cover_path, MAX_IMAGE_MEMBER_BYTES)
             with Image.open(__import__("io").BytesIO(raw)) as im:
                 cover_w, cover_h, cover_data = _render_cover_1bpp(im)
         except Exception:

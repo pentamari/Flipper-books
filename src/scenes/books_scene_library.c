@@ -59,7 +59,7 @@ void books_scene_library_on_enter(void* ctx) {
         book_progress_load_summary(path, &off, &total, &last_read, &fav);
         uint8_t pct = 0;
         if(total > 0) {
-            uint32_t p = off * 100u / total;
+            uint32_t p = (uint32_t)((uint64_t)off * 100u / total);
             pct = p > 100 ? 100 : (uint8_t)p;
         }
 

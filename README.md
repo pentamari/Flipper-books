@@ -14,6 +14,8 @@ auto-scroll, and battery-friendly power modes.
   separate per-image format byte for future grayscale support. The reader
   accepts both v1 and v2; the converter emits v2 by default (`--v1` for
   legacy).
+- Defensive file validation rejects malformed `.fbook` records whose text,
+  image, or cover ranges do not fit inside the file.
 - EPUB support via the Python converter.
 - `.txt` support directly on device.
 
@@ -89,7 +91,11 @@ python3 tools/epub_to_fbook.py my-book.epub -o my-book.fbook
 Flags:
 
 - `--no-images` - skip image extraction (smaller files, faster conversion).
+- `--v1` - emit legacy v1 `.fbook` output.
 - `-o PATH` - custom output path.
+
+The converter limits oversized EPUB XML, HTML, image, cover, and extracted
+text members before reading them into memory.
 
 ### Regenerating older .fbook files
 

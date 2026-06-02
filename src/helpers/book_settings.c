@@ -8,6 +8,7 @@
 #define STATS_MAGIC    0x53544132u /* 'STA2' */
 
 void book_settings_set_defaults(BookSettings* s) {
+    if(!s) return;
     memset(s, 0, sizeof(*s));
     s->power_mode = PowerModeBalanced;
     s->page_animation = PageAnimSlide;
@@ -33,6 +34,7 @@ void book_settings_set_defaults(BookSettings* s) {
 }
 
 static bool write_all(Storage* storage, const char* path, const void* data, size_t len) {
+    if(!storage || !path || !data) return false;
     File* f = storage_file_alloc(storage);
     bool ok = false;
     if(f && storage_file_open(f, path, FSAM_WRITE, FSOM_CREATE_ALWAYS)) {
@@ -44,6 +46,7 @@ static bool write_all(Storage* storage, const char* path, const void* data, size
 }
 
 static bool read_all(Storage* storage, const char* path, void* data, size_t len) {
+    if(!storage || !path || !data) return false;
     File* f = storage_file_alloc(storage);
     bool ok = false;
     if(f && storage_file_open(f, path, FSAM_READ, FSOM_OPEN_EXISTING)) {
@@ -60,26 +63,66 @@ typedef struct {
     BookSettings data;
 } SettingsBlob;
 
+static void book_settings_sanitize(BookSettings* s) {
+    if(s->power_mode < PowerModePowerSaver || s->power_mode > PowerModeGraphics) {
+        s->power_mode = PowerModeBalanced;
+    }
+    if(s->page_animation < PageAnimNone || s->page_animation > PageAnimCurl) {
+        s->page_animation = PageAnimSlide;
+    }
+    if(s->text_size < TextSizeTiny || s->text_size > TextSizeLarge) {
+        s->text_size = TextSizeSmall;
+    }
+    if(s->auto_scroll_speed < 1 || s->auto_scroll_speed > 10) s->auto_scroll_speed = 6;
+    if(s->backlight_level > 100) s->backlight_level = 60;
+    if(s->line_spacing < LineSpacingTight || s->line_spacing > LineSpacingDouble) {
+        s->line_spacing = LineSpacingNormal;
+    }
+    if(s->font_family < FontFamilyDefault || s->font_family > FontFamilySans) {
+        s->font_family = FontFamilyDefault;
+    }
+    if(s->margin < MarginCompact || s->margin > MarginWide) s->margin = MarginNormal;
+    switch(s->sleep_timer_minutes) {
+    case 0:
+    case 5:
+    case 10:
+    case 15:
+    case 30:
+    case 60:
+        break;
+    default:
+        s->sleep_timer_minutes = 0;
+        break;
+    }
+    if(s->library_sort < SortModeName || s->library_sort > SortModeFavoritesFirst) {
+        s->library_sort = SortModeRecent;
+    }
+}
+
 bool book_settings_load(BookSettings* s) {
+    if(!s) return false;
     Storage* storage = furi_record_open(RECORD_STORAGE);
     SettingsBlob b;
     bool ok = read_all(storage, BOOKS_SETTINGS_FILE, &b, sizeof(b));
     if(ok && b.magic == SETTINGS_MAGIC) {
         *s = b.data;
+        book_settings_sanitize(s);
     } else {
         book_settings_set_defaults(s);
         ok = false;
     }
-    furi_record_close(RECORD_STORAGE);
+    if(storage) furi_record_close(RECORD_STORAGE);
     return ok;
 }
 
 bool book_settings_save(const BookSettings* s) {
+    if(!s) return false;
     Storage* storage = furi_record_open(RECORD_STORAGE);
+    if(!storage) return false;
     storage_simply_mkdir(storage, BOOKS_APP_FOLDER);
     SettingsBlob b = {.magic = SETTINGS_MAGIC, .version = 2, .data = *s};
     bool ok = write_all(storage, BOOKS_SETTINGS_FILE, &b, sizeof(b));
-    furi_record_close(RECORD_STORAGE);
+    if(storage) furi_record_close(RECORD_STORAGE);
     return ok;
 }
 
@@ -90,10 +133,12 @@ typedef struct {
 } StatsBlob;
 
 void book_stats_set_defaults(BookStats* s) {
+    if(!s) return;
     memset(s, 0, sizeof(*s));
 }
 
 bool book_stats_load(BookStats* s) {
+    if(!s) return false;
     Storage* storage = furi_record_open(RECORD_STORAGE);
     StatsBlob b;
     bool ok = read_all(storage, BOOKS_STATS_FILE, &b, sizeof(b));
@@ -103,12 +148,14 @@ bool book_stats_load(BookStats* s) {
         book_stats_set_defaults(s);
         ok = false;
     }
-    furi_record_close(RECORD_STORAGE);
+    if(storage) furi_record_close(RECORD_STORAGE);
     return ok;
 }
 
 bool book_stats_save(const BookStats* s) {
+    if(!s) return false;
     Storage* storage = furi_record_open(RECORD_STORAGE);
+    if(!storage) return false;
     storage_simply_mkdir(storage, BOOKS_APP_FOLDER);
     StatsBlob b = {.magic = STATS_MAGIC, .version = 2, .data = *s};
     bool ok = write_all(storage, BOOKS_STATS_FILE, &b, sizeof(b));

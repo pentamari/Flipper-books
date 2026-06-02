@@ -99,12 +99,18 @@ static void save_progress(BooksApp* app) {
         uint32_t delta_words =
             (uint32_t)((uint64_t)delta_bytes * g_book->word_count /
                        g_book->text_length);
-        app->stats.total_words_read += delta_words;
+        if(UINT32_MAX - app->stats.total_words_read < delta_words) {
+            app->stats.total_words_read = UINT32_MAX;
+        } else {
+            app->stats.total_words_read += delta_words;
+        }
     }
 
+    uint32_t finish_threshold =
+        g_book->text_length > 16 ? g_book->text_length - 16 : g_book->text_length;
     if(!app->progress.finished &&
        g_book->text_length > 0 &&
-       app->progress.offset >= g_book->text_length - 16) {
+       app->progress.offset >= finish_threshold) {
         app->progress.finished = 1;
         app->stats.books_finished++;
     }

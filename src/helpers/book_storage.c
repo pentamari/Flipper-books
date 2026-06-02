@@ -15,6 +15,43 @@
 #define FBOOK_V2_CHAPTER_SIZE (4 + 4 + FBOOK_CHAPTER_TITLE_V2)  // 56
 #define FBOOK_V2_IMAGE_SIZE   (4 + 2 + 2 + 4 + 4 + 1 + 3)        // 20
 
+#define FBOOK_MAX_IMAGE_BYTES 4096u
+#define FBOOK_MAX_COVER_BYTES 8192u
+
+static bool add_u32_checked(uint32_t a, uint32_t b, uint32_t* out) {
+    if(UINT32_MAX - a < b) return false;
+    *out = a + b;
+    return true;
+}
+
+static bool bitmap_data_len(uint16_t w, uint16_t h, uint8_t format, uint32_t* out) {
+    if(!out || w == 0 || h == 0) return false;
+    if(format == 0) {
+        *out = ((uint32_t)(w + 7u) >> 3) * h;
+        return true;
+    }
+    if(format == 1) {
+        *out = ((uint32_t)w * h + 3u) >> 2;
+        return true;
+    }
+    return false;
+}
+
+static bool range_inside_file(uint32_t offset, uint32_t len, uint32_t file_size) {
+    uint32_t end = 0;
+    return add_u32_checked(offset, len, &end) && end <= file_size;
+}
+
+static void copy_fixed_cstr(char* dst, size_t dst_len, const char* src, size_t src_len) {
+    if(!dst || dst_len == 0) return;
+    size_t n = 0;
+    while(n < src_len && n + 1 < dst_len && src[n] != '\0') {
+        dst[n] = src[n];
+        n++;
+    }
+    dst[n] = '\0';
+}
+
 FBook* fbook_alloc(void) {
     FBook* b = malloc(sizeof(FBook));
     if(!b) return NULL;
@@ -118,9 +155,12 @@ static bool parse_header_v1(FBook* b) {
             b->images[i].w = read_u16(b->file);
             b->images[i].h = read_u16(b->file);
             b->images[i].data_offset = read_u32(b->file);
-            b->images[i].data_len =
-                ((uint32_t)b->images[i].w * b->images[i].h + 7) / 8;
             b->images[i].format = 0;
+            bitmap_data_len(
+                b->images[i].w,
+                b->images[i].h,
+                b->images[i].format,
+                &b->images[i].data_len);
         }
         if(!storage_file_seek(
                b->file, (uint32_t)over * FBOOK_V1_IMAGE_SIZE, false)) {
@@ -132,9 +172,12 @@ static bool parse_header_v1(FBook* b) {
             b->images[i].w = read_u16(b->file);
             b->images[i].h = read_u16(b->file);
             b->images[i].data_offset = read_u32(b->file);
-            b->images[i].data_len =
-                ((uint32_t)b->images[i].w * b->images[i].h + 7) / 8;
             b->images[i].format = 0;
+            bitmap_data_len(
+                b->images[i].w,
+                b->images[i].h,
+                b->images[i].format,
+                &b->images[i].data_len);
         }
     }
     b->version = 1;
@@ -200,7 +243,7 @@ static bool parse_header_v2(FBook* b) {
         b->images[i].data_len = read_u32(b->file);
         b->images[i].format = read_u8(b->file);
         uint8_t r[3];
-        storage_file_read(b->file, r, 3);
+        if(storage_file_read(b->file, r, 3) != 3) return false;
         (void)r;
     }
     if(saved_image_count > b->image_count) {
@@ -239,10 +282,43 @@ static bool parse_header(FBook* b) {
     return false;
 }
 
+static bool validate_header_ranges(const FBook* b) {
+    uint32_t file_size = storage_file_size(b->file);
+    if(!range_inside_file(b->text_offset, b->text_length, file_size)) return false;
+
+    for(uint16_t i = 0; i < b->chapter_count; ++i) {
+        if(b->chapters[i].offset > b->text_length) return false;
+    }
+
+    for(uint16_t i = 0; i < b->image_count; ++i) {
+        const FBookImage* img = &b->images[i];
+        uint32_t expected_len = 0;
+        if(!bitmap_data_len(img->w, img->h, img->format, &expected_len)) return false;
+        if(img->data_len < expected_len || img->data_len > FBOOK_MAX_IMAGE_BYTES) return false;
+        if(img->offset_in_text > b->text_length) return false;
+        if(!range_inside_file(img->data_offset, img->data_len, file_size)) return false;
+    }
+
+    if(b->version >= 2 && b->cover_data_len > 0) {
+        uint32_t expected_len = 0;
+        if(b->cover_offset == 0) return false;
+        if(!bitmap_data_len(b->cover_w, b->cover_h, b->cover_format, &expected_len)) {
+            return false;
+        }
+        if(b->cover_data_len < expected_len || b->cover_data_len > FBOOK_MAX_COVER_BYTES) {
+            return false;
+        }
+        if(!range_inside_file(b->cover_offset, b->cover_data_len, file_size)) return false;
+    }
+
+    return true;
+}
+
 bool fbook_open(FBook* b, const char* path) {
     if(!b || !path || !path[0]) return false;
     fbook_close(b);
     b->storage = furi_record_open(RECORD_STORAGE);
+    if(!b->storage) return false;
     storage_simply_mkdir(b->storage, BOOKS_APP_FOLDER);
     storage_simply_mkdir(b->storage, BOOKS_LIBRARY);
     storage_simply_mkdir(b->storage, BOOKS_CACHE);
@@ -278,7 +354,7 @@ bool fbook_open(FBook* b, const char* path) {
         fbook_close(b);
         return false;
     }
-    if(!parse_header(b)) {
+    if(!parse_header(b) || !validate_header_ranges(b)) {
         fbook_close(b);
         return false;
     }
@@ -290,18 +366,22 @@ bool fbook_open(FBook* b, const char* path) {
 }
 
 uint32_t fbook_read(FBook* b, uint32_t offset, char* out, uint32_t max_bytes) {
-    if(!b->file || offset >= b->text_length) return 0;
-    if(offset + max_bytes > b->text_length) {
+    if(!b || !b->file || !out || offset >= b->text_length) return 0;
+    if(max_bytes > b->text_length - offset) {
         max_bytes = b->text_length - offset;
     }
-    if(!storage_file_seek(b->file, b->text_offset + offset, true)) return 0;
+    uint32_t file_offset = 0;
+    if(!add_u32_checked(b->text_offset, offset, &file_offset)) return 0;
+    if(!storage_file_seek(b->file, file_offset, true)) return 0;
     return storage_file_read(b->file, out, max_bytes);
 }
 
 uint8_t* fbook_load_image(FBook* b, uint16_t index, uint16_t* w, uint16_t* h, uint8_t* format) {
-    if(index >= b->image_count) return NULL;
+    if(!b || !b->file || !w || !h || index >= b->image_count) return NULL;
     FBookImage* img = &b->images[index];
-    if(img->data_len == 0 || img->data_len > 4096) return NULL;
+    uint32_t expected_len = 0;
+    if(!bitmap_data_len(img->w, img->h, img->format, &expected_len)) return NULL;
+    if(img->data_len < expected_len || img->data_len > FBOOK_MAX_IMAGE_BYTES) return NULL;
     uint8_t* buf = malloc(img->data_len);
     if(!buf) return NULL;
     if(!storage_file_seek(b->file, img->data_offset, true)) {
@@ -319,8 +399,11 @@ uint8_t* fbook_load_image(FBook* b, uint16_t index, uint16_t* w, uint16_t* h, ui
 }
 
 uint8_t* fbook_load_cover(FBook* b, uint16_t* w, uint16_t* h, uint8_t* format) {
+    if(!b || !b->file || !w || !h) return NULL;
     if(b->version < 2 || b->cover_data_len == 0 || b->cover_offset == 0) return NULL;
-    if(b->cover_data_len > 8192) return NULL; // sanity
+    uint32_t expected_len = 0;
+    if(!bitmap_data_len(b->cover_w, b->cover_h, b->cover_format, &expected_len)) return NULL;
+    if(b->cover_data_len < expected_len || b->cover_data_len > FBOOK_MAX_COVER_BYTES) return NULL;
     uint8_t* buf = malloc(b->cover_data_len);
     if(!buf) return NULL;
     if(!storage_file_seek(b->file, b->cover_offset, true)) {
@@ -338,6 +421,7 @@ uint8_t* fbook_load_cover(FBook* b, uint16_t* w, uint16_t* h, uint8_t* format) {
 }
 
 uint16_t fbook_find_chapter(const FBook* b, uint32_t offset) {
+    if(!b) return 0;
     uint16_t idx = 0;
     for(uint16_t i = 0; i < b->chapter_count; ++i) {
         if(b->chapters[i].offset <= offset) idx = i;
@@ -347,6 +431,7 @@ uint16_t fbook_find_chapter(const FBook* b, uint32_t offset) {
 }
 
 uint16_t fbook_next_image(const FBook* b, uint32_t offset) {
+    if(!b) return UINT16_MAX;
     for(uint16_t i = 0; i < b->image_count; ++i) {
         if(b->images[i].offset_in_text >= offset) return i;
     }
@@ -354,7 +439,7 @@ uint16_t fbook_next_image(const FBook* b, uint32_t offset) {
 }
 
 uint32_t fbook_search(FBook* b, uint32_t start_offset, const char* needle) {
-    if(!needle || !*needle) return UINT32_MAX;
+    if(!b || !b->file || !needle || !*needle) return UINT32_MAX;
     size_t nlen = strlen(needle);
     if(nlen > 31) nlen = 31;
     char window[128];
@@ -435,7 +520,9 @@ static void cache_path_for(const char* src, char* out, size_t out_len) {
 }
 
 bool fbook_import_txt(const char* txt_path, char* out_path, size_t out_len) {
+    if(!txt_path || !out_path || out_len == 0) return false;
     Storage* storage = furi_record_open(RECORD_STORAGE);
+    if(!storage) return false;
     storage_simply_mkdir(storage, BOOKS_CACHE);
     char dst[256];
     cache_path_for(txt_path, dst, sizeof(dst));
@@ -488,7 +575,9 @@ bool fbook_import_txt(const char* txt_path, char* out_path, size_t out_len) {
 /* EPUB on-device conversion remains a future enhancement: we look for a
  * pre-converted .fbook sidecar and otherwise prompt the user. */
 bool fbook_import_epub(const char* epub_path, char* out_path, size_t out_len) {
+    if(!epub_path || !out_path || out_len == 0) return false;
     Storage* storage = furi_record_open(RECORD_STORAGE);
+    if(!storage) return false;
     storage_simply_mkdir(storage, BOOKS_CACHE);
     char dst[256];
     cache_path_for(epub_path, dst, sizeof(dst));
@@ -504,6 +593,7 @@ bool fbook_import_epub(const char* epub_path, char* out_path, size_t out_len) {
 bool fbook_delete(const char* book_path) {
     if(!book_path || !*book_path) return false;
     Storage* storage = furi_record_open(RECORD_STORAGE);
+    if(!storage) return false;
 
     bool primary_ok = storage_simply_remove(storage, book_path);
 
@@ -525,6 +615,7 @@ bool fbook_delete(const char* book_path) {
 
 uint16_t fbook_scan_library(char paths[][256], uint16_t max_paths) {
     Storage* storage = furi_record_open(RECORD_STORAGE);
+    if(!storage || !paths || max_paths == 0) return 0;
     storage_simply_mkdir(storage, BOOKS_LIBRARY);
     storage_simply_mkdir(storage, BOOKS_CACHE);
 
@@ -560,7 +651,9 @@ bool fbook_peek(const char* path,
                 char* author, size_t author_len,
                 uint32_t* text_length,
                 uint32_t* word_count) {
+    if(!path || !*path) return false;
     Storage* storage = furi_record_open(RECORD_STORAGE);
+    if(!storage) return false;
     File* f = storage_file_alloc(storage);
     bool ok = false;
     if(f && storage_file_open(f, path, FSAM_READ, FSOM_OPEN_EXISTING)) {
@@ -580,14 +673,8 @@ bool fbook_peek(const char* path,
                     uint32_t tl = read_u32(f);
                     uint32_t wc = read_u32(f);
                     (void)to;
-                    if(title) {
-                        strncpy(title, tt, title_len - 1);
-                        title[title_len - 1] = '\0';
-                    }
-                    if(author) {
-                        strncpy(author, aa, author_len - 1);
-                        author[author_len - 1] = '\0';
-                    }
+                    copy_fixed_cstr(title, title_len, tt, sizeof(tt));
+                    copy_fixed_cstr(author, author_len, aa, sizeof(aa));
                     if(text_length) *text_length = tl;
                     if(word_count) *word_count = wc;
                     ok = true;
@@ -600,14 +687,8 @@ bool fbook_peek(const char* path,
                     uint32_t to = read_u32(f);
                     uint32_t tl = read_u32(f);
                     (void)to;
-                    if(title) {
-                        strncpy(title, tt, title_len - 1);
-                        title[title_len - 1] = '\0';
-                    }
-                    if(author) {
-                        strncpy(author, aa, author_len - 1);
-                        author[author_len - 1] = '\0';
-                    }
+                    copy_fixed_cstr(title, title_len, tt, sizeof(tt));
+                    copy_fixed_cstr(author, author_len, aa, sizeof(aa));
                     if(text_length) *text_length = tl;
                     if(word_count) *word_count = tl / 6; // crude estimate
                     ok = true;
@@ -622,7 +703,9 @@ bool fbook_peek(const char* path,
 }
 
 uint8_t* fbook_peek_cover(const char* path, uint16_t* w, uint16_t* h, uint8_t* format) {
+    if(!path || !*path) return NULL;
     Storage* storage = furi_record_open(RECORD_STORAGE);
+    if(!storage) return NULL;
     File* f = storage_file_alloc(storage);
     uint8_t* buf = NULL;
     if(f && storage_file_open(f, path, FSAM_READ, FSOM_OPEN_EXISTING)) {
@@ -643,7 +726,11 @@ uint8_t* fbook_peek_cover(const char* path, uint16_t* w, uint16_t* h, uint8_t* f
                 uint16_t ch = read_u16(f);
                 uint32_t clen = read_u32(f);
                 uint8_t cfmt = read_u8(f);
-                if(cover_offset && clen && clen <= 8192 && cw && ch) {
+                uint32_t expected_len = 0;
+                if(cover_offset &&
+                   bitmap_data_len(cw, ch, cfmt, &expected_len) &&
+                   clen >= expected_len &&
+                   clen <= FBOOK_MAX_COVER_BYTES) {
                     if(storage_file_seek(f, cover_offset, true)) {
                         buf = malloc(clen);
                         if(buf) {

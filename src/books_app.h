@@ -63,6 +63,7 @@ typedef struct {
     ReaderView* reader;
     LibraryView* library;
     TocView* toc;
+    bool views_registered;
 
     BookSettings settings;
     BookStats stats;

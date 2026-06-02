@@ -112,6 +112,11 @@ static uint8_t inline_image_max_h(const FBook* b) {
     return (b && b->version >= 2) ? 48u : 32u;
 }
 
+static uint32_t clamp_book_offset(const FBook* book, uint32_t offset) {
+    if(!book) return 0;
+    return offset > book->text_length ? book->text_length : offset;
+}
+
 /* Plate-page mode (whole screen given to one image) was disabled after
  * crash reports right after opening v2 books with cover-page art. The
  * normal reserve+text path renders covers the same way but without the
@@ -211,6 +216,13 @@ static uint32_t compute_page_end_for(
 
 /* Compute page end offset by word-wrapping in the cache. */
 static void compute_page_end(ReaderModel* m) {
+    if(!m->book || !m->settings) {
+        m->cache_len = 0;
+        m->page_end_offset = m->page_offset;
+        return;
+    }
+    m->page_offset = clamp_book_offset(m->book, m->page_offset);
+
     /* Plate page: a v2 image that fills the screen takes the page on its
      * own; advance past the single byte the converter inserts at the image
      * marker so the next page resumes with text. */
@@ -355,13 +367,18 @@ static void draw_text_page(Canvas* c, ReaderModel* m, int16_t x_offset) {
     /* Push text below the page-number overlay when it's on. Mirrors the
      * reserve logic in compute_page_end so line counts stay consistent. */
     if(m->settings->show_page_number && reserve < 8) reserve = 8;
-    uint16_t text_len = (uint16_t)(m->page_end_offset - m->page_offset);
+    uint16_t text_len = 0;
+    if(m->page_end_offset > m->page_offset) {
+        uint32_t len = m->page_end_offset - m->page_offset;
+        if(len > sizeof(m->cache)) len = sizeof(m->cache);
+        text_len = (uint16_t)len;
+    }
     draw_text_buffer(c, m, m->cache, text_len, x_offset, reserve);
 }
 
 static void draw_progress_bar(Canvas* c, const FBook* b, uint32_t offset, bool night) {
     if(b->text_length == 0) return;
-    uint32_t pct = (offset * 100) / b->text_length;
+    uint32_t pct = (uint32_t)((uint64_t)offset * 100u / b->text_length);
     if(pct > 100) pct = 100;
     int16_t w = (int16_t)((pct * (READER_W - 2)) / 100);
     if(night) canvas_set_color(c, ColorWhite);
@@ -375,7 +392,7 @@ static void draw_progress_bar(Canvas* c, const FBook* b, uint32_t offset, bool n
 static void draw_page_number(Canvas* c, const ReaderModel* m) {
     if(!m->book || m->book->text_length == 0) return;
     char buf[24];
-    uint32_t pct = (m->page_offset * 100) / m->book->text_length;
+    uint32_t pct = (uint32_t)((uint64_t)m->page_offset * 100u / m->book->text_length);
     if(pct > 100) pct = 100;
     snprintf(buf, sizeof(buf), "p%lu  %lu%%",
              (unsigned long)(m->page_number + 1),
@@ -729,6 +746,10 @@ ReaderView* reader_view_alloc(void) {
     if(!r) return NULL;
     memset(r, 0, sizeof(*r));
     r->view = view_alloc();
+    if(!r->view) {
+        free(r);
+        return NULL;
+    }
     view_allocate_model(r->view, ViewModelTypeLocking, sizeof(ReaderModel));
     with_view_model(
         r->view, ReaderModel * m, { memset(m, 0, sizeof(*m)); }, false);
@@ -737,24 +758,41 @@ ReaderView* reader_view_alloc(void) {
     view_set_input_callback(r->view, input_callback);
 
     r->anim_timer = furi_timer_alloc(anim_timer_cb, FuriTimerTypePeriodic, r);
+    if(!r->anim_timer) {
+        view_free(r->view);
+        free(r);
+        return NULL;
+    }
     furi_timer_start(r->anim_timer, furi_ms_to_ticks(30));
     r->auto_timer = furi_timer_alloc(auto_timer_cb, FuriTimerTypePeriodic, r);
+    if(!r->auto_timer) {
+        furi_timer_stop(r->anim_timer);
+        furi_timer_free(r->anim_timer);
+        view_free(r->view);
+        free(r);
+        return NULL;
+    }
     return r;
 }
 
 void reader_view_free(ReaderView* r) {
     if(!r) return;
-    furi_timer_stop(r->anim_timer);
-    furi_timer_free(r->anim_timer);
-    furi_timer_stop(r->auto_timer);
-    furi_timer_free(r->auto_timer);
-    view_free(r->view);
+    if(r->anim_timer) {
+        furi_timer_stop(r->anim_timer);
+        furi_timer_free(r->anim_timer);
+    }
+    if(r->auto_timer) {
+        furi_timer_stop(r->auto_timer);
+        furi_timer_free(r->auto_timer);
+    }
+    if(r->view) view_free(r->view);
     free(r);
 }
 
-View* reader_view_get_view(ReaderView* r) { return r->view; }
+View* reader_view_get_view(ReaderView* r) { return r ? r->view : NULL; }
 
 void reader_view_set_book(ReaderView* r, FBook* book) {
+    if(!r || !r->view) return;
     with_view_model(
         r->view, ReaderModel * m, {
             m->book = book;
@@ -768,13 +806,13 @@ void reader_view_set_book(ReaderView* r, FBook* book) {
 }
 
 void reader_view_set_settings(ReaderView* r, const BookSettings* settings) {
-    if(!r || !settings) return;
+    if(!r || !r->view || !settings) return;
     with_view_model(
         r->view, ReaderModel * m, {
             m->settings = settings;
-            if(settings->auto_scroll) {
+            if(settings->auto_scroll && r->auto_timer) {
                 furi_timer_start(r->auto_timer, furi_ms_to_ticks(1000u * settings->auto_scroll_speed));
-            } else {
+            } else if(r->auto_timer) {
                 furi_timer_stop(r->auto_timer);
             }
             /* (Re)compute the sleep timer deadline whenever settings change.
@@ -794,11 +832,11 @@ void reader_view_set_settings(ReaderView* r, const BookSettings* settings) {
 }
 
 void reader_view_set_progress(ReaderView* r, const BookProgress* progress) {
-    if(!r || !progress) return;
+    if(!r || !r->view || !progress) return;
     with_view_model(
         r->view, ReaderModel * m, {
             m->progress = *progress;
-            m->page_offset = progress->offset;
+            m->page_offset = clamp_book_offset(m->book, progress->offset);
             m->page_number = progress->page;
             m->stack.count = 0;
             if(m->book && m->settings) compute_page_end(m);
@@ -807,6 +845,7 @@ void reader_view_set_progress(ReaderView* r, const BookProgress* progress) {
 }
 
 uint32_t reader_view_get_offset(const ReaderView* r) {
+    if(!r || !r->view) return 0;
     uint32_t out = 0;
     with_view_model(
         r->view, ReaderModel * m, { out = m->page_offset; }, false);
@@ -814,6 +853,7 @@ uint32_t reader_view_get_offset(const ReaderView* r) {
 }
 
 uint32_t reader_view_get_page(const ReaderView* r) {
+    if(!r || !r->view) return 0;
     uint32_t out = 0;
     with_view_model(
         r->view, ReaderModel * m, { out = m->page_number; }, false);
@@ -821,10 +861,11 @@ uint32_t reader_view_get_page(const ReaderView* r) {
 }
 
 void reader_view_jump_to(ReaderView* r, uint32_t offset) {
+    if(!r || !r->view) return;
     with_view_model(
         r->view, ReaderModel * m, {
             push_page(&m->stack, m->page_offset);
-            m->page_offset = offset;
+            m->page_offset = clamp_book_offset(m->book, offset);
             if(m->book && m->settings) compute_page_end(m);
         },
         true);
@@ -879,10 +920,12 @@ void reader_view_build_page_map(
 }
 
 void reader_view_set_event_callback(ReaderView* r, ReaderEventCallback cb, void* ctx) {
+    if(!r) return;
     r->event_cb = cb;
     r->event_ctx = ctx;
 }
 
 void reader_view_set_notifications(ReaderView* r, NotificationApp* notifications) {
+    if(!r) return;
     r->notifications = notifications;
 }

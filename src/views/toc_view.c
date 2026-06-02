@@ -197,6 +197,10 @@ TocView* toc_view_alloc(void) {
     if(!v) return NULL;
     memset(v, 0, sizeof(*v));
     v->view = view_alloc();
+    if(!v->view) {
+        free(v);
+        return NULL;
+    }
     view_allocate_model(v->view, ViewModelTypeLocking, sizeof(TocModel));
     with_view_model(
         v->view, TocModel * m, { memset(m, 0, sizeof(*m)); }, false);
@@ -204,23 +208,31 @@ TocView* toc_view_alloc(void) {
     view_set_draw_callback(v->view, render_callback);
     view_set_input_callback(v->view, input_callback);
     v->scroll_timer = furi_timer_alloc(scroll_timer_cb, FuriTimerTypePeriodic, v);
+    if(!v->scroll_timer) {
+        view_free(v->view);
+        free(v);
+        return NULL;
+    }
     furi_timer_start(v->scroll_timer, furi_ms_to_ticks(250));
     return v;
 }
 
 void toc_view_free(TocView* v) {
     if(!v) return;
-    furi_timer_stop(v->scroll_timer);
-    furi_timer_free(v->scroll_timer);
-    view_free(v->view);
+    if(v->scroll_timer) {
+        furi_timer_stop(v->scroll_timer);
+        furi_timer_free(v->scroll_timer);
+    }
+    if(v->view) view_free(v->view);
     free(v);
 }
 
 View* toc_view_get_view(TocView* v) {
-    return v->view;
+    return v ? v->view : NULL;
 }
 
 void toc_view_reset(TocView* v, const char* header, const char* empty_text) {
+    if(!v || !v->view) return;
     with_view_model(
         v->view,
         TocModel * m,
@@ -233,7 +245,7 @@ void toc_view_reset(TocView* v, const char* header, const char* empty_text) {
 }
 
 void toc_view_add_entry(TocView* v, const char* text) {
-    if(!v || !text) return;
+    if(!v || !v->view || !text) return;
     with_view_model(
         v->view,
         TocModel * m,
@@ -249,6 +261,7 @@ void toc_view_add_entry(TocView* v, const char* text) {
 }
 
 void toc_view_set_select_callback(TocView* v, TocViewSelectCb cb, void* ctx) {
+    if(!v) return;
     v->cb = cb;
     v->cb_ctx = ctx;
 }

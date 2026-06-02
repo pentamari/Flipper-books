@@ -1,6 +1,7 @@
 .ufbt/
 dist/
 build/
+tmp/
 *.pyc
 __pycache__/
 *.fap

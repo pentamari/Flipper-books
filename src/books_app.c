@@ -2,6 +2,7 @@
 
 #include <furi.h>
 #include <notification/notification_messages.h>
+#include <stdint.h>
 #include <stdlib.h>
 
 static bool books_custom_event_callback(void* ctx, uint32_t event) {
@@ -24,21 +25,19 @@ BooksApp* books_app_alloc(void) {
     app->storage = furi_record_open(RECORD_STORAGE);
     app->dialogs = furi_record_open(RECORD_DIALOGS);
 
-    storage_simply_mkdir(app->storage, BOOKS_APP_FOLDER);
-    storage_simply_mkdir(app->storage, BOOKS_LIBRARY);
-    storage_simply_mkdir(app->storage, BOOKS_CACHE);
-    storage_simply_mkdir(app->storage, BOOKS_PROGRESS);
-    storage_simply_mkdir(app->storage, BOOKS_BOOKMARKS);
+    if(app->storage) {
+        storage_simply_mkdir(app->storage, BOOKS_APP_FOLDER);
+        storage_simply_mkdir(app->storage, BOOKS_LIBRARY);
+        storage_simply_mkdir(app->storage, BOOKS_CACHE);
+        storage_simply_mkdir(app->storage, BOOKS_PROGRESS);
+        storage_simply_mkdir(app->storage, BOOKS_BOOKMARKS);
+    }
 
     book_settings_load(&app->settings);
     book_stats_load(&app->stats);
 
     app->view_dispatcher = view_dispatcher_alloc();
     app->scene_manager = scene_manager_alloc(&books_scene_handlers, app);
-
-    view_dispatcher_set_event_callback_context(app->view_dispatcher, app);
-    view_dispatcher_set_custom_event_callback(app->view_dispatcher, books_custom_event_callback);
-    view_dispatcher_set_navigation_event_callback(app->view_dispatcher, books_back_event_callback);
 
     app->submenu = submenu_alloc();
     app->var_list = variable_item_list_alloc();
@@ -49,6 +48,18 @@ BooksApp* books_app_alloc(void) {
     app->library = library_view_alloc();
     app->toc = toc_view_alloc();
 
+    if(!app->gui || !app->notifications || !app->storage || !app->dialogs ||
+       !app->view_dispatcher || !app->scene_manager || !app->submenu ||
+       !app->var_list || !app->text_input || !app->dialog || !app->popup ||
+       !app->reader || !app->library || !app->toc) {
+        books_app_free(app);
+        return NULL;
+    }
+
+    view_dispatcher_set_event_callback_context(app->view_dispatcher, app);
+    view_dispatcher_set_custom_event_callback(app->view_dispatcher, books_custom_event_callback);
+    view_dispatcher_set_navigation_event_callback(app->view_dispatcher, books_back_event_callback);
+
     view_dispatcher_add_view(app->view_dispatcher, BooksViewSubmenu, submenu_get_view(app->submenu));
     view_dispatcher_add_view(app->view_dispatcher, BooksViewVarList, variable_item_list_get_view(app->var_list));
     view_dispatcher_add_view(app->view_dispatcher, BooksViewTextInput, text_input_get_view(app->text_input));
@@ -57,6 +68,7 @@ BooksApp* books_app_alloc(void) {
     view_dispatcher_add_view(app->view_dispatcher, BooksViewReader, reader_view_get_view(app->reader));
     view_dispatcher_add_view(app->view_dispatcher, BooksViewLibrary, library_view_get_view(app->library));
     view_dispatcher_add_view(app->view_dispatcher, BooksViewToc, toc_view_get_view(app->toc));
+    app->views_registered = true;
 
     view_dispatcher_attach_to_gui(app->view_dispatcher, app->gui, ViewDispatcherTypeFullscreen);
 
@@ -69,36 +81,45 @@ void books_app_free(BooksApp* app) {
     if(!app) return;
 
     // persist stats
-    uint32_t elapsed_s = (furi_get_tick() - app->session_start_tick) / furi_kernel_get_tick_frequency();
-    app->stats.total_read_seconds += elapsed_s;
-    book_stats_save(&app->stats);
-    book_settings_save(&app->settings);
+    if(app->session_start_tick) {
+        uint32_t elapsed_s =
+            (furi_get_tick() - app->session_start_tick) / furi_kernel_get_tick_frequency();
+        if(UINT32_MAX - app->stats.total_read_seconds < elapsed_s) {
+            app->stats.total_read_seconds = UINT32_MAX;
+        } else {
+            app->stats.total_read_seconds += elapsed_s;
+        }
+        book_stats_save(&app->stats);
+        book_settings_save(&app->settings);
+    }
 
-    view_dispatcher_remove_view(app->view_dispatcher, BooksViewSubmenu);
-    view_dispatcher_remove_view(app->view_dispatcher, BooksViewVarList);
-    view_dispatcher_remove_view(app->view_dispatcher, BooksViewTextInput);
-    view_dispatcher_remove_view(app->view_dispatcher, BooksViewDialog);
-    view_dispatcher_remove_view(app->view_dispatcher, BooksViewPopup);
-    view_dispatcher_remove_view(app->view_dispatcher, BooksViewReader);
-    view_dispatcher_remove_view(app->view_dispatcher, BooksViewLibrary);
-    view_dispatcher_remove_view(app->view_dispatcher, BooksViewToc);
+    if(app->view_dispatcher && app->views_registered) {
+        view_dispatcher_remove_view(app->view_dispatcher, BooksViewSubmenu);
+        view_dispatcher_remove_view(app->view_dispatcher, BooksViewVarList);
+        view_dispatcher_remove_view(app->view_dispatcher, BooksViewTextInput);
+        view_dispatcher_remove_view(app->view_dispatcher, BooksViewDialog);
+        view_dispatcher_remove_view(app->view_dispatcher, BooksViewPopup);
+        view_dispatcher_remove_view(app->view_dispatcher, BooksViewReader);
+        view_dispatcher_remove_view(app->view_dispatcher, BooksViewLibrary);
+        view_dispatcher_remove_view(app->view_dispatcher, BooksViewToc);
+    }
 
-    submenu_free(app->submenu);
-    variable_item_list_free(app->var_list);
-    text_input_free(app->text_input);
-    dialog_ex_free(app->dialog);
-    popup_free(app->popup);
+    if(app->submenu) submenu_free(app->submenu);
+    if(app->var_list) variable_item_list_free(app->var_list);
+    if(app->text_input) text_input_free(app->text_input);
+    if(app->dialog) dialog_ex_free(app->dialog);
+    if(app->popup) popup_free(app->popup);
     reader_view_free(app->reader);
     library_view_free(app->library);
     toc_view_free(app->toc);
 
-    scene_manager_free(app->scene_manager);
-    view_dispatcher_free(app->view_dispatcher);
+    if(app->scene_manager) scene_manager_free(app->scene_manager);
+    if(app->view_dispatcher) view_dispatcher_free(app->view_dispatcher);
 
-    furi_record_close(RECORD_DIALOGS);
-    furi_record_close(RECORD_STORAGE);
-    furi_record_close(RECORD_NOTIFICATION);
-    furi_record_close(RECORD_GUI);
+    if(app->dialogs) furi_record_close(RECORD_DIALOGS);
+    if(app->storage) furi_record_close(RECORD_STORAGE);
+    if(app->notifications) furi_record_close(RECORD_NOTIFICATION);
+    if(app->gui) furi_record_close(RECORD_GUI);
 
     free(app);
 }

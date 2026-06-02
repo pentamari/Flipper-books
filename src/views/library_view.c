@@ -222,6 +222,10 @@ LibraryView* library_view_alloc(void) {
     if(!v) return NULL;
     memset(v, 0, sizeof(*v));
     v->view = view_alloc();
+    if(!v->view) {
+        free(v);
+        return NULL;
+    }
     view_allocate_model(v->view, ViewModelTypeLocking, sizeof(LibraryModel));
     with_view_model(
         v->view, LibraryModel * m, { memset(m, 0, sizeof(*m)); }, false);
@@ -244,13 +248,14 @@ void library_view_free(LibraryView* v) {
     if(!v) return;
     with_view_model(
         v->view, LibraryModel * m, { free_covers(m); }, false);
-    view_free(v->view);
+    if(v->view) view_free(v->view);
     free(v);
 }
 
-View* library_view_get_view(LibraryView* v) { return v->view; }
+View* library_view_get_view(LibraryView* v) { return v ? v->view : NULL; }
 
 void library_view_reset(LibraryView* v, const char* header, bool delete_mode) {
+    if(!v || !v->view) return;
     with_view_model(
         v->view, LibraryModel * m, {
             free_covers(m);
@@ -321,6 +326,10 @@ void library_view_add_entry(
     uint8_t* cover_data,
     uint16_t cover_w,
     uint16_t cover_h) {
+    if(!v || !v->view) {
+        if(cover_data) free(cover_data);
+        return;
+    }
     /* Compress the cover into a 16x16 thumbnail before storing; the caller
      * owns the original until this function returns. */
     uint8_t* cached = NULL;
@@ -385,6 +394,7 @@ static void library_sort_with(LibraryEntry* arr, uint16_t n, LibCmp cmp) {
 }
 
 void library_view_apply_sort(LibraryView* v, LibrarySort sort) {
+    if(!v || !v->view) return;
     with_view_model(
         v->view, LibraryModel * m, {
             m->sort = sort;
@@ -415,6 +425,7 @@ void library_view_apply_sort(LibraryView* v, LibrarySort sort) {
 }
 
 const char* library_view_selected_path(LibraryView* v) {
+    if(!v || !v->view) return NULL;
     static char buf[256];
     bool ok = false;
     with_view_model(
@@ -430,6 +441,7 @@ const char* library_view_selected_path(LibraryView* v) {
 }
 
 void library_view_set_select_callback(LibraryView* v, LibraryViewSelectCb cb, void* ctx) {
+    if(!v) return;
     v->cb = cb;
     v->cb_ctx = ctx;
 }

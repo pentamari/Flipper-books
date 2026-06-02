@@ -23,7 +23,8 @@ void books_scene_bookmarks_on_enter(void* ctx) {
         for(uint16_t i = 0; i < app->progress.bookmark_count; ++i) {
             snprintf(label, sizeof(label), "%u%%  %s",
                      (unsigned)(app->progress.total_bytes ?
-                        (app->progress.bookmarks[i].offset * 100 / app->progress.total_bytes) : 0),
+                        ((uint64_t)app->progress.bookmarks[i].offset * 100u /
+                         app->progress.total_bytes) : 0),
                      app->progress.bookmarks[i].label);
             submenu_add_item(m, label, i, submenu_cb, app);
         }

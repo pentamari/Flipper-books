@@ -28,7 +28,8 @@ void books_scene_goto_percent_on_enter(void* ctx) {
 
     uint8_t initial = 0;
     if(app->progress.total_bytes > 0) {
-        uint32_t p = app->progress.offset * 100u / app->progress.total_bytes;
+        uint32_t p =
+            (uint32_t)((uint64_t)app->progress.offset * 100u / app->progress.total_bytes);
         if(p > 100) p = 100;
         initial = (uint8_t)p;
     }

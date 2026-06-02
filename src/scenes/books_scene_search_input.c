@@ -4,14 +4,14 @@ static void on_search_text(void* ctx) {
     BooksApp* app = ctx;
     // Search in currently open book (if any) by jumping via Reader handler
     FBook* b = fbook_alloc();
-    if(fbook_open(b, app->current_book_path)) {
+    if(b && fbook_open(b, app->current_book_path)) {
         uint32_t found = fbook_search(b, 0, app->text_input_buf);
         if(found != UINT32_MAX) {
             app->progress.offset = found;
             book_progress_save(app->current_book_path, &app->progress);
         }
-        fbook_free(b);
     }
+    fbook_free(b);
     view_dispatcher_send_custom_event(app->view_dispatcher, BooksEventJumpTo);
 }
 

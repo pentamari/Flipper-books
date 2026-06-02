@@ -30,10 +30,11 @@ void books_scene_stats_on_enter(void* ctx) {
      * Skipped if the user is not currently in a book. */
     char eta[24] = "";
     if(app->progress.words_in_book > 0 && app->progress.total_bytes > 0) {
-        uint32_t remaining_words =
-            app->progress.words_in_book -
+        uint32_t read_words =
             (uint32_t)((uint64_t)app->progress.words_in_book *
                        app->progress.offset / app->progress.total_bytes);
+        if(read_words > app->progress.words_in_book) read_words = app->progress.words_in_book;
+        uint32_t remaining_words = app->progress.words_in_book - read_words;
         uint32_t eta_min = remaining_words / wpm;
         if(eta_min > 0) {
             snprintf(eta, sizeof(eta), "  ETA %luh%lum",

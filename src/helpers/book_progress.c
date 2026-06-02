@@ -14,6 +14,7 @@ void book_progress_set_defaults(BookProgress* p) {
 }
 
 static void progress_path_for(const char* book_path, char* out, size_t out_len) {
+    if(!out || out_len == 0) return;
     const char* slash = strrchr(book_path, '/');
     const char* name = slash ? slash + 1 : book_path;
     snprintf(out, out_len, "%s/%s.prg", BOOKS_PROGRESS, name);
@@ -25,8 +26,21 @@ typedef struct {
     BookProgress data;
 } ProgressBlob;
 
+static void book_progress_sanitize(BookProgress* p) {
+    if(p->bookmark_count > BOOKS_MAX_BOOKMARKS) {
+        p->bookmark_count = BOOKS_MAX_BOOKMARKS;
+    }
+    if(p->favorite > 1) p->favorite = 1;
+    if(p->finished > 1) p->finished = 1;
+}
+
 bool book_progress_load(const char* book_path, BookProgress* p) {
+    if(!book_path || !p) return false;
     Storage* storage = furi_record_open(RECORD_STORAGE);
+    if(!storage) {
+        book_progress_set_defaults(p);
+        return false;
+    }
     char path[256];
     progress_path_for(book_path, path, sizeof(path));
     File* f = storage_file_alloc(storage);
@@ -36,6 +50,7 @@ bool book_progress_load(const char* book_path, BookProgress* p) {
         if(storage_file_read(f, &b, sizeof(b)) == sizeof(b) &&
            (b.magic == PROGRESS_MAGIC_V2 || b.magic == PROGRESS_MAGIC_V1)) {
             *p = b.data;
+            book_progress_sanitize(p);
             ok = true;
         }
         storage_file_close(f);
@@ -47,7 +62,9 @@ bool book_progress_load(const char* book_path, BookProgress* p) {
 }
 
 bool book_progress_save(const char* book_path, const BookProgress* p) {
+    if(!book_path || !p) return false;
     Storage* storage = furi_record_open(RECORD_STORAGE);
+    if(!storage) return false;
     storage_simply_mkdir(storage, BOOKS_PROGRESS);
     char path[256];
     progress_path_for(book_path, path, sizeof(path));
@@ -64,6 +81,7 @@ bool book_progress_save(const char* book_path, const BookProgress* p) {
 }
 
 bool book_progress_add_bookmark(BookProgress* p, uint32_t offset, uint32_t page, const char* label) {
+    if(!p) return false;
     if(p->bookmark_count >= BOOKS_MAX_BOOKMARKS) return false;
     Bookmark* b = &p->bookmarks[p->bookmark_count++];
     b->offset = offset;
@@ -75,6 +93,7 @@ bool book_progress_add_bookmark(BookProgress* p, uint32_t offset, uint32_t page,
 }
 
 bool book_progress_remove_bookmark(BookProgress* p, uint16_t index) {
+    if(!p) return false;
     if(index >= p->bookmark_count) return false;
     for(uint16_t i = index; i < (uint16_t)(p->bookmark_count - 1); ++i) {
         p->bookmarks[i] = p->bookmarks[i + 1];
@@ -88,6 +107,7 @@ bool book_progress_load_summary(const char* book_path,
                                 uint32_t* total_bytes,
                                 uint32_t* last_read,
                                 uint8_t* favorite) {
+    if(!book_path) return false;
     BookProgress p;
     if(!book_progress_load(book_path, &p)) return false;
     if(offset) *offset = p.offset;
