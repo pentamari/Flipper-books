@@ -121,23 +121,24 @@ static void save_progress(BooksApp* app) {
 
 bool books_scene_reader_on_event(void* ctx, SceneManagerEvent event) {
     BooksApp* app = ctx;
+    if(event.type == SceneManagerEventTypeBack) {
+        scene_manager_search_and_switch_to_previous_scene(app->scene_manager, BooksSceneStart);
+        return true;
+    }
+
     if(event.type != SceneManagerEventTypeCustom) return false;
 
     switch(event.event) {
     case BooksEventCloseBook:
-        save_progress(app);
         scene_manager_search_and_switch_to_previous_scene(app->scene_manager, BooksSceneStart);
         return true;
     case BooksEventOpenMenu:
-        save_progress(app);
         scene_manager_next_scene(app->scene_manager, BooksSceneMenu);
         return true;
     case BooksEventToggleBookmark:
-        save_progress(app);
         scene_manager_next_scene(app->scene_manager, BooksSceneAddBookmark);
         return true;
     case BooksEventShowTOC:
-        save_progress(app);
         scene_manager_next_scene(app->scene_manager, BooksSceneTOC);
         return true;
     case BooksEventSearchNext: {
@@ -159,6 +160,9 @@ void books_scene_reader_on_exit(void* ctx) {
     BooksApp* app = ctx;
     if(g_book) {
         save_progress(app);
+        reader_view_set_book(app->reader, NULL);
+        reader_view_set_event_callback(app->reader, NULL, NULL);
+        reader_view_set_notifications(app->reader, NULL);
         fbook_free(g_book);
         g_book = NULL;
     }

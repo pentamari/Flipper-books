@@ -55,6 +55,8 @@ auto-scroll, and battery-friendly power modes.
 - Total time read, pages read, books opened, books finished.
 
 Per-book progress is saved automatically on every page turn and on exit.
+When leaving the reader, the app saves once and detaches the active book from
+the reader view before freeing it, so timers cannot observe stale book state.
 
 ## Controls (in reader)
 
@@ -67,7 +69,7 @@ Per-book progress is saved automatically on every page turn and on exit.
 | `Up`            | Add bookmark at current position      |
 | `Down`          | Open table of contents                |
 | `OK`            | Open in-book menu (bookmarks/search)  |
-| `Back`          | Save progress and return to library   |
+| `Back`          | Save progress and return to Books menu |
 
 ## Loading books
 
